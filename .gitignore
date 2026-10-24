@@ -16,3 +16,12 @@
 .chart-data-*/
 .codex-ppt-edit/
 tmp/
+
+# Local-only project references (keep on this computer, do not upload)
+/Proposal_系统设计与工作计划_材料.md
+/分享对话-豆包.png
+/分工与计划_v4.md
+/技术栈与数据源（1）.md
+/第一周技术对接待确认事项.docx
+/系统设计与工作计划_材料（简）.md
+/项目全流程指导书.md
