@@ -1,0 +1,503 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "itinerary.schema.json",
+  "title": "AI 多人旅行规划助手 · 行程数据 Schema v1.0",
+  "description": "Agent 输出的行程结构化数据契约。限定国内单个城市自由行；预留多人协同（成员/权限/修改记录）字段；价格必须区分 AI 估算与真实报价。",
+  "type": "object",
+  "required": ["schema_version", "trip_id", "version", "city", "meta", "days", "cost_summary"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Schema 版本号，结构变更时递增"
+    },
+    "trip_id": {
+      "type": "string",
+      "description": "行程唯一 ID，由后端生成；Agent 首次生成时可传空字符串占位"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "行程版本号，每次保存 +1；多人冲突检测依据（附加A 方案 A2 轮询）"
+    },
+    "created_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "后端维护"
+    },
+    "updated_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "后端维护"
+    },
+    "city": {
+      "type": "object",
+      "description": "目的地城市（Baseline：仅限国内单个城市自由行，不跨市）",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "城市名，如「成都」",
+          "examples": ["成都", "广州", "北京"]
+        },
+        "adcode": {
+          "type": ["string", "null"],
+          "description": "高德行政区划编码，由信息采集模块（模块②）通过地图 API 回填"
+        },
+        "province": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "description": "行程元信息，来自需求理解模块（模块①）输出的结构化约束",
+      "required": ["date_start", "date_end", "traveler_count", "budget_total"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "行程标题，LLM 可生成，如「成都 3 日美食自由行」"
+        },
+        "date_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "traveler_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "budget_total": {
+          "$ref": "#/$defs/money",
+          "description": "预算总额；若用户表达为「人均」，由需求理解模块换算为总额并在解析结果中标注"
+        },
+        "preferences": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "用户偏好，如「美食优先」「少走路」「亲子友好」"
+        },
+        "pace": {
+          "enum": ["relaxed", "normal", "intense", null],
+          "description": "行程节奏：宽松 / 适中 / 紧凑，影响每日活动数量"
+        },
+        "party_type": {
+          "enum": ["solo", "couple", "family", "friends", "other", null]
+        },
+        "special_constraints": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "其他自然语言约束，如「不吃辣」「有老人同行」"
+        }
+      }
+    },
+    "members": {
+      "type": "array",
+      "description": "【预留 · 第2周启用】行程成员列表。多人协同（附加A）启用后由后端维护，Agent 只读",
+      "items": {
+        "type": "object",
+        "required": ["user_id", "role"],
+        "properties": {
+          "user_id": { "type": "string" },
+          "nickname": { "type": ["string", "null"] },
+          "role": {
+            "enum": ["owner", "editor", "viewer"],
+            "description": "owner=创建者，editor=可编辑成员，viewer=只读成员"
+          },
+          "joined_at": {
+            "type": ["string", "null"],
+            "format": "date-time"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "【预留 · 第2周启用】协同与权限配置，由后端维护",
+      "properties": {
+        "collab_mode": {
+          "enum": ["A1_edit_lock", "A2_poll", null],
+          "description": "A1=编辑锁（同一时刻一人编辑）；A2=轮询式准实时（每3秒拉取+冲突弹窗），组内二选一"
+        },
+        "edit_policy": {
+          "enum": ["owner_only", "all_members", null]
+        },
+        "invite_code": {
+          "type": ["string", "null"],
+          "description": "分享链接邀请码"
+        },
+        "invite_expires_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "locked_by": {
+          "type": ["string", "null"],
+          "description": "A1 模式下当前持锁成员的 user_id，null 表示无人持锁"
+        }
+      }
+    },
+    "days": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/day" }
+    },
+    "cost_summary": {
+      "type": "object",
+      "description": "费用汇总。金额由规则引擎（模块④）重算，不信任 LLM 直接给出的汇总",
+      "required": ["total_estimate"],
+      "properties": {
+        "total_estimate": {
+          "$ref": "#/$defs/money"
+        },
+        "by_day": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date", "amount"],
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "amount": { "type": "number", "minimum": 0 }
+            }
+          }
+        },
+        "budget_status": {
+          "enum": ["within", "over", null],
+          "description": "规则引擎计算结论，非 LLM 结论"
+        },
+        "over_by": {
+          "type": ["number", "null"],
+          "description": "超出预算的金额；budget_status=over 时必填"
+        }
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "description": "【预留 · 第3周启用】修改记录。每次约束修改/行中重排/成员编辑生成一条；AI 产出的修订必须 status=pending_confirmation，用户预览确认后才允许覆盖行程（User Control 硬要求）",
+      "items": { "$ref": "#/$defs/revision" }
+    },
+    "candidates": {
+      "type": "array",
+      "description": "【预留 · 第3周启用】攻略导入候选条目（附加E）：LLM 从用户粘贴的游记文本中提取，用户勾选确认后转为正式 activity",
+      "items": { "$ref": "#/$defs/candidate" }
+    }
+  },
+  "$defs": {
+    "money": {
+      "type": "object",
+      "description": "金额结构。Baseline 硬要求：AI 估算价与真实查询报价必须分开标注",
+      "required": ["amount", "currency", "price_type"],
+      "properties": {
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "currency": {
+          "const": "CNY"
+        },
+        "price_type": {
+          "enum": ["estimate", "quoted"],
+          "description": "estimate=AI 估算；quoted=地图 API 等真实查询到的报价。LLM 只允许产生 estimate"
+        },
+        "source": {
+          "enum": ["llm", "amap", "baidu", "qweather", "manual", "other", null],
+          "description": "价格来源；price_type=quoted 时必填"
+        },
+        "fetched_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "查询时间戳；price_type=quoted 时必填"
+        },
+        "note": {
+          "type": ["string", "null"],
+          "description": "价格备注，如「旺季可能上浮」"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "price_type": { "const": "quoted" } } },
+          "then": { "required": ["source", "fetched_at"] }
+        }
+      ]
+    },
+    "location": {
+      "type": "object",
+      "description": "地点。坐标与 POI ID 由信息采集模块通过地图 API 回填，LLM 不得编造 poi_id",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "address": { "type": ["string", "null"] },
+        "lng": {
+          "type": ["number", "null"],
+          "minimum": -180,
+          "maximum": 180
+        },
+        "lat": {
+          "type": ["number", "null"],
+          "minimum": -90,
+          "maximum": 90
+        },
+        "poi_id": {
+          "type": ["string", "null"],
+          "description": "地图 POI ID（如高德 POI 编号），仅允许由地图 API 查询后回填"
+        },
+        "poi_source": {
+          "enum": ["amap", "baidu", "llm", null],
+          "description": "poi_id 来源；llm 表示仅为占位，待 API 校验"
+        }
+      }
+    },
+    "time_slot": {
+      "type": "object",
+      "description": "时间段，24 小时制 HH:MM；跨天的酒店住宿按入住当天记录",
+      "required": ["start", "end"],
+      "properties": {
+        "start": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+        }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "description": "行程活动条目（景点/餐饮/住宿/交通/自由时间）",
+      "required": ["activity_id", "type", "title", "time_slot"],
+      "properties": {
+        "activity_id": {
+          "type": "string",
+          "description": "活动唯一 ID，格式 act-<序号>。重排/修改时未变更的活动必须保持原 ID 不变（多人协同与差异对比的锚点）"
+        },
+        "type": {
+          "enum": ["poi", "meal", "hotel", "transport", "free_time"]
+        },
+        "title": { "type": "string" },
+        "time_slot": { "$ref": "#/$defs/time_slot" },
+        "location": { "$ref": "#/$defs/location" },
+        "cost": {
+          "$ref": "#/$defs/money",
+          "description": "预估费用；真实报价由信息采集模块查询后回填或替换"
+        },
+        "note": {
+          "type": ["string", "null"],
+          "description": "AI 备注，如「需提前在公众号预约」"
+        },
+        "open_hours_hint": {
+          "type": ["string", "null"],
+          "description": "开放时间提示（LLM 常识性参考值）；准确值以地图 API 查询为准并带时间戳"
+        },
+        "status": {
+          "enum": ["planned", "confirmed", "done", "replaced", "removed"],
+          "default": "planned",
+          "description": "planned=已规划；confirmed=用户已确认；done=已完成（行中状态）；replaced=被替换；removed=已删除（保留记录用于 diff）"
+        },
+        "replaced_reason": {
+          "type": ["string", "null"],
+          "description": "行中被替换的原因（如「次日有雨」「临时闭馆」「排队过长」），支撑附加B"
+        }
+      }
+    },
+    "transfer": {
+      "type": "object",
+      "description": "附加C：两个 activity 之间的点对点出行方式缓存。由地图路线规划 API 查询生成，LLM 不生成此结构",
+      "required": ["from_activity_id", "to_activity_id", "options"],
+      "properties": {
+        "from_activity_id": { "type": "string" },
+        "to_activity_id": { "type": "string" },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["mode", "distance_km", "duration_min"],
+            "properties": {
+              "mode": {
+                "enum": ["walk", "bike", "drive", "transit"],
+                "description": "步行 / 骑行 / 驾车 / 公共交通"
+              },
+              "distance_km": { "type": "number", "minimum": 0 },
+              "duration_min": { "type": "integer", "minimum": 0 },
+              "transit_count": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "description": "公共交通换乘次数，仅 transit 模式"
+              },
+              "source": {
+                "enum": ["amap", "baidu", "tencent", null]
+              },
+              "fetched_at": {
+                "type": ["string", "null"],
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "day": {
+      "type": "object",
+      "required": ["date", "day_index", "activities"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "day_index": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "第几天，从 1 开始，与 days 数组顺序一致"
+        },
+        "theme": {
+          "type": ["string", "null"],
+          "description": "当日主题，如「老城区 citywalk」"
+        },
+        "weather": {
+          "type": ["object", "null"],
+          "description": "【预留 · 第2周启用】当日天气快照（和风天气/OpenWeather），支撑附加B 降雨替换景点",
+          "properties": {
+            "summary": { "type": "string", "description": "如「小雨」「多云」" },
+            "rain_prob": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "source": { "type": ["string", "null"] },
+            "fetched_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "activities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/activity" }
+        },
+        "transfers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/transfer" }
+        }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "description": "修改记录：谁、为什么、改了什么。模块⑤「交互式修改」与附加B 的核心数据结构",
+      "required": ["revision_id", "seq", "actor", "action", "status"],
+      "properties": {
+        "revision_id": {
+          "type": "string",
+          "description": "格式 rev-<seq>"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "全局递增序号；applied 时与行程 version 联动"
+        },
+        "actor": {
+          "type": "object",
+          "required": ["source"],
+          "properties": {
+            "user_id": {
+              "type": ["string", "null"],
+              "description": "人工操作时为成员 user_id；system 时为 null"
+            },
+            "source": {
+              "enum": ["human", "ai", "system"],
+              "description": "human=成员手动编辑；ai=Agent 产出；system=系统操作（如成员加入自动调整）"
+            }
+          }
+        },
+        "action": {
+          "enum": ["create", "constraint_change", "replan_midtrip", "member_edit", "guide_import"],
+          "description": "create=初始生成；constraint_change=行前改约束（模块⑤）；replan_midtrip=行中重排（附加B）；member_edit=成员手动编辑；guide_import=攻略导入"
+        },
+        "summary": {
+          "type": ["string", "null"],
+          "description": "本次修改的一句话说明，展示给用户，如「预算从 1500 降到 1000，替换了 2 个高价景点」"
+        },
+        "constraint_snapshot": {
+          "type": ["object", "null"],
+          "description": "触发本次修改的约束快照（改了哪个约束、新值是什么）"
+        },
+        "diff": {
+          "type": "array",
+          "description": "结构化差异，模块⑤「向用户解释改了哪里、为什么」的数据来源",
+          "items": {
+            "type": "object",
+            "required": ["op", "path"],
+            "properties": {
+              "op": {
+                "enum": ["add", "replace", "remove", "move"]
+              },
+              "path": {
+                "type": "string",
+                "description": "JSON Pointer 路径，如 /days/0/activities/2/title"
+              },
+              "field": {
+                "type": ["string", "null"],
+                "description": "语义化字段名，前端展示用，如「time_slot」「title」"
+              },
+              "old_value": {
+                "description": "被替换/删除的旧值；add 时为 null"
+              },
+              "new_value": {
+                "description": "新增/替换后的新值；remove 时为 null"
+              },
+              "reason": {
+                "type": ["string", "null"],
+                "description": "AI 解释修改原因，如「该景点门票 120 元，替换后可控制在预算内」"
+              }
+            }
+          }
+        },
+        "status": {
+          "enum": ["pending_confirmation", "applied", "rejected"],
+          "description": "AI 产出默认 pending_confirmation；用户预览确认后 applied；用户拒绝后 rejected（原行程不变）"
+        },
+        "created_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "confirmed_by": {
+          "type": ["string", "null"],
+          "description": "确认人 user_id（多人协同下任何 editor 均可确认）"
+        },
+        "confirmed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "description": "附加E：攻略文本解析出的候选条目，勾选后由后端转换为 activity 追加进对应 day",
+      "required": ["candidate_id", "title"],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "description": "格式 cand-<序号>"
+        },
+        "title": { "type": "string" },
+        "type": {
+          "enum": ["poi", "meal", "hotel", "transport", "free_time", null]
+        },
+        "suggested_day_index": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "LLM 建议放入第几天；用户可改"
+        },
+        "time_slot": { "$ref": "#/$defs/time_slot" },
+        "location": { "$ref": "#/$defs/location" },
+        "cost": { "$ref": "#/$defs/money" },
+        "excerpt": {
+          "type": ["string", "null"],
+          "description": "原文摘录（溯源用，展示给用户核对）"
+        },
+        "selected": {
+          "type": "boolean",
+          "default": false,
+          "description": "用户勾选状态；确认导入时后端只处理 selected=true 的条目"
+        }
+      }
+    }
+  }
+}
