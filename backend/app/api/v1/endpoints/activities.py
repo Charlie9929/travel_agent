@@ -114,6 +114,7 @@ async def update_activity(
     for field, value in payload.model_dump(exclude_unset=True, exclude={"trip_version"}).items():
         setattr(activity, field, value)
     await session.flush()
+    await session.refresh(activity)
     after = ActivityRead.model_validate(activity).model_dump(mode="json")
     session.add(
         TripRevision(

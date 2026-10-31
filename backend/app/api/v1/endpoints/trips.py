@@ -21,8 +21,12 @@ from app.schemas.trip import (
     TripDetail,
     TripList,
     TripRead,
+    TripRevisionRead,
     TripUpdate,
+    TripValidationRequest,
 )
+from app.services.itinerary_snapshot import build_itinerary_snapshot
+from app.services.trip_validation import validate_trip_rules
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -114,6 +118,66 @@ async def get_trip(
                 for day_number in day_numbers
             ],
         )
+    )
+
+
+@router.get("/{trip_id}/revisions", response_model=ApiResponse[list[TripRevisionRead]])
+async def list_trip_revisions(
+    trip_id: int,
+    session: DbSession,
+    current_user: CurrentUser,
+    resource_type: str | None = Query(default=None, max_length=20),
+    resource_id: int | None = Query(default=None, ge=1),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+) -> ApiResponse[list[TripRevisionRead]]:
+    await require_trip_member(session, trip_id, current_user.id)
+    statement = (
+        select(TripRevision)
+        .where(TripRevision.trip_id == trip_id)
+        .order_by(TripRevision.version.desc(), TripRevision.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    if resource_type is not None:
+        statement = statement.where(TripRevision.resource_type == resource_type)
+    if resource_id is not None:
+        statement = statement.where(TripRevision.resource_id == resource_id)
+    revisions = list((await session.scalars(statement)).all())
+    return ApiResponse(data=[TripRevisionRead.model_validate(item) for item in revisions])
+
+
+@router.get(
+    "/{trip_id}/revisions/{revision_id}", response_model=ApiResponse[TripRevisionRead]
+)
+async def get_trip_revision(
+    trip_id: int,
+    revision_id: int,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[TripRevisionRead]:
+    await require_trip_member(session, trip_id, current_user.id)
+    revision = await session.scalar(
+        select(TripRevision).where(
+            TripRevision.id == revision_id, TripRevision.trip_id == trip_id
+        )
+    )
+    if revision is None:
+        raise NotFoundError("修改记录不存在")
+    return ApiResponse(data=TripRevisionRead.model_validate(revision))
+
+
+@router.post("/{trip_id}/validate", response_model=ApiResponse[dict])
+async def validate_trip(
+    trip_id: int,
+    payload: TripValidationRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[dict]:
+    await require_trip_member(session, trip_id, current_user.id)
+    itinerary = await build_itinerary_snapshot(session, trip_id)
+    return ApiResponse(
+        data=validate_trip_rules(itinerary, candidate_activities=payload.candidate_activities)
     )
 
 

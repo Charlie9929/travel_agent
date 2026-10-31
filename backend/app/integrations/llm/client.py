@@ -37,6 +37,7 @@ class LLMClient(Protocol):
 
 class FakeLLMClient:
     def __init__(self, fixture: dict[str, Any] | None = None) -> None:
+        self._has_custom_fixture = fixture is not None
         self.fixture = fixture or {
             "schema_version": "1.0",
             "trip_id": "",
@@ -89,10 +90,67 @@ class FakeLLMClient:
         timeout_seconds: float,
         temperature: float = 0.7,
     ) -> LLMResult:
-        del system_prompt, user_prompt, schema, timeout_seconds, temperature
-        raw = json.dumps(self.fixture, ensure_ascii=False)
+        del schema, timeout_seconds, temperature
+        fixture = self.fixture
+        if not self._has_custom_fixture and "重排模块" in system_prompt:
+            request_data = json.loads(user_prompt)
+            fixture = {
+                "summary": "Fake LLM 重排候选（未修改活动）",
+                "diff": {"ops": []},
+                "proposed_itinerary": request_data["itinerary_json"],
+            }
+        elif not self._has_custom_fixture and "修改模块" in system_prompt:
+            request_data = json.loads(user_prompt)
+            fixture = {
+                "summary": "Fake LLM 修订候选（未修改活动）",
+                "diff": {"ops": []},
+                "proposed_itinerary": request_data["itinerary_json"],
+            }
+        elif not self._has_custom_fixture and "差异解说器" in system_prompt:
+            request_data = json.loads(user_prompt)
+            if request_data.get("mode") == "conflict":
+                fixture = {
+                    "summary": "Fake LLM 冲突差异说明",
+                    "my_changes": [],
+                    "teammate_changes": [],
+                    "both_changed": [],
+                }
+            else:
+                fixture = {"summary": "Fake LLM 差异说明", "by_day": []}
+        elif not self._has_custom_fixture and "游记攻略解析器" in system_prompt:
+            fixture = {
+                "candidates": [
+                    {
+                        "candidate_id": "cand-1",
+                        "title": "宽窄巷子",
+                        "type": "poi",
+                        "suggested_day_index": 1,
+                        "time_slot": {"start": "09:00", "end": "11:00"},
+                        "location": {
+                            "name": "宽窄巷子",
+                            "address": None,
+                            "lng": None,
+                            "lat": None,
+                            "poi_id": None,
+                            "poi_source": "llm",
+                        },
+                        "cost": {
+                            "amount": 0,
+                            "currency": "CNY",
+                            "price_type": "estimate",
+                            "source": "llm",
+                            "note": "原文称免费",
+                        },
+                        "note": None,
+                        "excerpt": "上午去了宽窄巷子，免费。",
+                        "selected": False,
+                    }
+                ],
+                "warnings": [],
+            }
+        raw = json.dumps(fixture, ensure_ascii=False)
         return LLMResult(
-            parsed_data=self.fixture,
+            parsed_data=fixture,
             raw_text=raw,
             model=f"fake:{model}",
             prompt_version=prompt_version,

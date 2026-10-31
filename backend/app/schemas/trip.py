@@ -80,3 +80,21 @@ class TripList(BaseModel):
 
 class TripDeleteRequest(BaseModel):
     version: int = Field(ge=1)
+
+
+class TripRevisionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    trip_id: int
+    resource_id: int | None
+    user_id: int
+    version: int
+    action: str
+    diff_content: dict[str, Any]
+    resource_type: str
+    created_at: datetime
+
+
+class TripValidationRequest(BaseModel):
+    candidate_activities: list[dict[str, Any]] | None = None

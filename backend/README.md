@@ -9,6 +9,8 @@
 - Trip、成员、活动 CRUD。
 - `version` 乐观锁、轮询读取和冲突记录。
 - DeepSeek JSON 模式基础封装及 Fake LLM。AI 结果经 Schema 校验（失败时最多自动修复 2 次）和高德 POI 回填后直接事务落库。
+- 技术一的行中重排、行前修订和差异说明 Prompt v0.2 已分别接入 `/api/v1/ai/replan`、`/api/v1/ai/revise` 与 `/api/v1/ai/explain-diff`。重排/修订先返回候选方案，经 Schema 和业务规则校验后保存；用户再通过 `/api/v1/trips/{trip_id}/ai-runs/{ai_run_id}/apply` 确认应用。
+- 攻略抽取 Prompt v0.1 已接入 `/api/v1/ai/import-guide`；用户选择候选后，以 `append_selected` 模式调用统一 apply 接口写入活动。
 - 高德 POI 限流时自动节流、退避重试，并可从失败的 AI 运行继续回填，无需重新消耗 LLM 额度。
 - 高德 POI、步行、骑行、驾车和公交路线适配器。
 - 和风天气城市查询及每日天气适配器。
@@ -48,4 +50,4 @@ pytest
 python scripts/llm_smoke.py  # 需要真实 DeepSeek Key
 ```
 
-更复杂的业务规则修复、行中重排和攻略导入属于后续开发；当前已提供初次生成的 JSON 修复循环、Schema 校验、POI 回填和落库链路。
+当前已提供初次生成、行前修订、行中重排、差异说明和攻略抽取的 JSON 修复循环、Schema 校验、技术一业务校验器、候选确认应用、POI 回填和落库链路。

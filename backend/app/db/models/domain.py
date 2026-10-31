@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     Numeric,
     String,
@@ -54,6 +55,7 @@ class Trip(TimestampMixin, Base):
         ),
         CheckConstraint("version >= 1", name="version_positive"),
         CheckConstraint("status IN ('draft','ongoing','finished')", name="status_enum"),
+        Index("ix_trip_creator_id", "creator_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -85,6 +87,7 @@ class TripMember(Base):
     __table_args__ = (
         UniqueConstraint("trip_id", "user_id"),
         CheckConstraint("role IN ('owner','editor','viewer')", name="role_enum"),
+        Index("ix_trip_member_user_id", "user_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -178,6 +181,10 @@ class ExpenseSplit(Base):
 
 class TripRevision(Base):
     __tablename__ = "trip_revision"
+    __table_args__ = (
+        Index("ix_trip_revision_trip_version", "trip_id", "version"),
+        Index("ix_trip_revision_resource", "resource_type", "resource_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
@@ -211,7 +218,10 @@ class EditConflict(Base):
 class AiRunLog(Base):
     __tablename__ = "ai_run_log"
     __table_args__ = (
-        CheckConstraint("run_type IN ('generate','replan','import_guide')", name="run_type_enum"),
+        CheckConstraint(
+            "run_type IN ('generate','revise','replan','explain_diff','import_guide')",
+            name="run_type_enum",
+        ),
         CheckConstraint(
             "status IN ('running','succeeded','failed','discarded','applied')",
             name="status_enum",
