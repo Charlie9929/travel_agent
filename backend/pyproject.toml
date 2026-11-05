@@ -33,6 +33,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+  "integration: rollback-safe tests that require the local PostgreSQL database",
+  "external: opt-in tests that spend real DeepSeek, Amap, or QWeather quota",
+]
 
 [tool.ruff]
 line-length = 100

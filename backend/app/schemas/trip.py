@@ -94,6 +94,10 @@ class TripRevisionRead(BaseModel):
     diff_content: dict[str, Any]
     resource_type: str
     created_at: datetime
+    summary: str | None = None
+    before: Any | None = None
+    after: Any | None = None
+    changes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TripValidationRequest(BaseModel):

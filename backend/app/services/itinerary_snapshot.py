@@ -62,10 +62,15 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
             total_estimate += activity.price_estimated
 
     day_count = (trip.end_date - trip.start_date).days + 1
+    trip_extra = trip.extra if isinstance(trip.extra, dict) else {}
+    weather_by_date = trip_extra.get("weather_by_date", {})
     days = [
         {
             "date": (trip.start_date + timedelta(days=index - 1)).isoformat(),
             "day_index": index,
+            "weather": weather_by_date.get(
+                (trip.start_date + timedelta(days=index - 1)).isoformat()
+            ),
             "activities": activities_by_day.get(index, []),
             "transfers": [],
         }
@@ -127,6 +132,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
         },
         "revisions": [_revision_to_agent(item) for item in revisions],
         "candidates": [],
+        "integration_warnings": trip_extra.get("integration_warnings", []),
     }
 
 

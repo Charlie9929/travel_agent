@@ -1,4 +1,5 @@
 from datetime import date
+from functools import lru_cache
 
 from fastapi import APIRouter, Query
 
@@ -10,6 +11,7 @@ from app.schemas.common import ApiResponse
 router = APIRouter(tags=["weather"])
 
 
+@lru_cache
 def get_qweather_client() -> QWeatherClient:
     settings = get_settings()
     return QWeatherClient(
@@ -18,6 +20,8 @@ def get_qweather_client() -> QWeatherClient:
         api_key=settings.qweather_api_key,
         jwt_token=settings.qweather_jwt_token,
         timeout_seconds=settings.qweather_timeout_seconds,
+        retries=settings.qweather_retries,
+        cache_ttl_seconds=settings.qweather_cache_ttl_seconds,
     )
 
 

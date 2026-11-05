@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -60,7 +61,15 @@ class FakeLLMClient:
                     "date": "2026-01-01",
                     "day_index": 1,
                     "theme": "Mock day",
-                    "activities": [],
+                    "activities": [
+                        {
+                            "activity_id": "act-1",
+                            "type": "free_time",
+                            "title": "Mock 自由活动",
+                            "time_slot": {"start": "09:00", "end": "10:00"},
+                            "status": "planned",
+                        }
+                    ],
                     "transfers": [],
                 }
             ],
@@ -243,7 +252,7 @@ class DeepSeekClient:
             content = body["choices"][0]["message"]["content"]
             if not content:
                 raise ValueError("empty content")
-            parsed = json.loads(content)
+            parsed = _parse_json_object(content)
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AppError(
                 "AGENT_OUTPUT_INVALID", "DeepSeek 未返回有效 JSON", status_code=502
@@ -260,3 +269,20 @@ class DeepSeekClient:
             latency_ms=round((time.perf_counter() - start) * 1000),
             request_id=request_id,
         )
+
+
+def _parse_json_object(content: str) -> dict[str, Any]:
+    text = content.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        parsed, _ = json.JSONDecoder().raw_decode(text[start:])
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM response is not a JSON object")
+    return parsed

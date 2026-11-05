@@ -13,7 +13,9 @@ from app.services.ai_service import (
     _apply_changed_constraints_to_trip,
     _collect_revision_days,
     _complete_replan_candidate,
+    _normalize_generated_itinerary,
     _rebase_replan_candidate,
+    _validate_initial_generation_content,
 )
 
 
@@ -202,3 +204,52 @@ def test_revision_updates_stable_trip_business_fields() -> None:
     assert trip.traveler_count == 3
     assert trip.preferences == {"items": ["美食"]}
     assert trip.constraints["pace"] == "relaxed"
+
+
+def test_generation_normalizes_common_deepseek_aliases() -> None:
+    normalized = _normalize_generated_itinerary(
+        {
+            "days": [
+                {
+                    "date": "2026-11-05",
+                    "activities": [
+                        {
+                            "name": "成都博物馆",
+                            "type": "attraction",
+                            "time": "09:00-11:00",
+                            "location": "成都博物馆",
+                            "cost": 0,
+                        },
+                        {
+                            "name": "午餐",
+                            "type": "restaurant",
+                            "start_time": "12:00",
+                            "end_time": "13:00",
+                            "location": {"address": "春熙路"},
+                            "cost": 60,
+                        },
+                    ],
+                }
+            ],
+            "cost_summary": {"total_estimate": 60},
+        }
+    )
+    first, second = normalized["days"][0]["activities"]
+    assert first["activity_id"] == "act-1"
+    assert first["title"] == "成都博物馆"
+    assert first["type"] == "poi"
+    assert first["time_slot"] == {"start": "09:00", "end": "11:00"}
+    assert first["cost"]["amount"] == 0
+    assert second["activity_id"] == "act-2"
+    assert second["type"] == "meal"
+    assert second["location"]["name"] == "午餐"
+    assert normalized["cost_summary"]["total_estimate"]["amount"] == 60
+
+
+def test_initial_generation_rejects_empty_days() -> None:
+    with pytest.raises(AppError) as exc_info:
+        _validate_initial_generation_content(
+            {"days": [{"day_index": 1, "activities": []}]}
+        )
+    assert exc_info.value.code == "AGENT_OUTPUT_INVALID"
+    assert exc_info.value.detail[0]["code"] == "EMPTY_GENERATED_DAY"

@@ -241,3 +241,121 @@ class AiRunLog(Base):
     error_code: Mapped[str | None] = mapped_column(String(50))
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LobbyMessage(Base):
+    __tablename__ = "lobby_message"
+    __table_args__ = (
+        CheckConstraint("kind IN ('user','agent','system')", name="kind_enum"),
+        CheckConstraint("visibility = 'trip'", name="visibility_enum"),
+        Index("ix_lobby_message_trip_id_id", "trip_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    sender_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="trip", server_default="trip"
+    )
+    reply_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("lobby_message.id", ondelete="SET NULL")
+    )
+    structured_data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LobbyReadState(Base):
+    __tablename__ = "lobby_read_state"
+    __table_args__ = (UniqueConstraint("trip_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    last_read_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("lobby_message.id", ondelete="SET NULL")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AgentConversation(TimestampMixin, Base):
+    __tablename__ = "agent_conversation"
+    __table_args__ = (UniqueConstraint("trip_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False, default="和 Agent 私聊")
+
+
+class AgentChatMessage(Base):
+    __tablename__ = "agent_chat_message"
+    __table_args__ = (
+        CheckConstraint("role IN ('user','assistant')", name="role_enum"),
+        CheckConstraint("status IN ('pending','succeeded','failed')", name="status_enum"),
+        Index("ix_agent_chat_message_conversation_id_id", "conversation_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_conversation.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="succeeded")
+    error_code: Mapped[str | None] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TravelRequirement(TimestampMixin, Base):
+    __tablename__ = "travel_requirement"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "user_id"),
+        CheckConstraint("status IN ('pending','completed')", name="status_enum"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    filled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    shared_summary: Mapped[str | None] = mapped_column(Text)
+    shared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class UserMemory(TimestampMixin, Base):
+    __tablename__ = "user_memory"
+    __table_args__ = (
+        CheckConstraint("visibility IN ('private','shared')", name="visibility_enum"),
+        Index("ix_user_memory_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="private", server_default="private"
+    )
+    authorized_trip_ids: Mapped[list[int]] = mapped_column(JSONB, default=list, server_default="[]")
+
+
+class TripHighlight(TimestampMixin, Base):
+    __tablename__ = "trip_highlight"
+    __table_args__ = (Index("ix_trip_highlight_trip_id", "trip_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    title: Mapped[str] = mapped_column(String(100), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(String(500))
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

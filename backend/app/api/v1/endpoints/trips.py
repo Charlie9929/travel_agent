@@ -25,6 +25,7 @@ from app.schemas.trip import (
     TripUpdate,
     TripValidationRequest,
 )
+from app.services.collaboration import present_revision_diff, queue_system_message
 from app.services.itinerary_snapshot import build_itinerary_snapshot
 from app.services.trip_validation import validate_trip_rules
 
@@ -144,12 +145,17 @@ async def list_trip_revisions(
     if resource_id is not None:
         statement = statement.where(TripRevision.resource_id == resource_id)
     revisions = list((await session.scalars(statement)).all())
-    return ApiResponse(data=[TripRevisionRead.model_validate(item) for item in revisions])
+    return ApiResponse(
+        data=[
+            TripRevisionRead.model_validate(item).model_copy(
+                update=present_revision_diff(item.diff_content)
+            )
+            for item in revisions
+        ]
+    )
 
 
-@router.get(
-    "/{trip_id}/revisions/{revision_id}", response_model=ApiResponse[TripRevisionRead]
-)
+@router.get("/{trip_id}/revisions/{revision_id}", response_model=ApiResponse[TripRevisionRead])
 async def get_trip_revision(
     trip_id: int,
     revision_id: int,
@@ -158,13 +164,15 @@ async def get_trip_revision(
 ) -> ApiResponse[TripRevisionRead]:
     await require_trip_member(session, trip_id, current_user.id)
     revision = await session.scalar(
-        select(TripRevision).where(
-            TripRevision.id == revision_id, TripRevision.trip_id == trip_id
-        )
+        select(TripRevision).where(TripRevision.id == revision_id, TripRevision.trip_id == trip_id)
     )
     if revision is None:
         raise NotFoundError("修改记录不存在")
-    return ApiResponse(data=TripRevisionRead.model_validate(revision))
+    return ApiResponse(
+        data=TripRevisionRead.model_validate(revision).model_copy(
+            update=present_revision_diff(revision.diff_content)
+        )
+    )
 
 
 @router.post("/{trip_id}/validate", response_model=ApiResponse[dict])
@@ -186,6 +194,10 @@ async def update_trip(
     trip_id: int, payload: TripUpdate, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[TripRead]:
     await require_trip_editor(session, trip_id, current_user.id)
+    current_before = await session.get(Trip, trip_id)
+    if current_before is None:
+        raise NotFoundError("行程不存在")
+    before = TripRead.model_validate(current_before).model_dump(mode="json")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     values.update(version=Trip.version + 1, last_editor_id=current_user.id)
     result = await session.execute(
@@ -224,8 +236,18 @@ async def update_trip(
             action="update",
             resource_type="trip",
             resource_id=trip.id,
-            diff_content={"submitted": payload.model_dump(mode="json", exclude={"version"})},
+            diff_content={
+                "before": before,
+                "after": TripRead.model_validate(trip).model_dump(mode="json"),
+            },
         )
+    )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="trip_changed",
+        content=f"{current_user.nickname} 更新了行程基本信息",
+        data={"trip_version": trip.version},
     )
     await session.commit()
     return ApiResponse(data=TripRead.model_validate(trip))
