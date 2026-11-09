@@ -6,6 +6,20 @@ type ApiEnvelope<T> = {
   msg: string;
 };
 
+export class ApiError extends Error {
+  status: number;
+  code: string;
+  detail: unknown;
+
+  constructor(message: string, status: number, code = "UNKNOWN", detail: unknown = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
 export type ApiTrip = {
   id: number;
   title: string;
@@ -58,9 +72,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
-  const payload = (await response.json()) as ApiEnvelope<T> | { msg?: string };
+  const payload = (await response.json()) as ApiEnvelope<T> | { code?: string; msg?: string; data?: unknown };
   if (!response.ok) {
-    throw new Error("msg" in payload && payload.msg ? payload.msg : `请求失败：${response.status}`);
+    const message = "msg" in payload && payload.msg ? payload.msg : `请求失败：${response.status}`;
+    const code = "code" in payload && payload.code ? payload.code : "UNKNOWN";
+    const detail = "data" in payload ? payload.data : null;
+    throw new ApiError(message, response.status, code, detail);
   }
   return (payload as ApiEnvelope<T>).data;
 }
@@ -105,18 +122,33 @@ export const api = {
       adjustment_requirements: string;
       trip_version: number;
       after_time?: string;
+      trigger?: Record<string, unknown>;
+      candidate_replacements?: Record<string, unknown>[];
     }) => {
       const result = await request<{
         ai_run_id: number;
         candidate_itinerary: unknown;
+        diff?: { ops: Record<string, unknown>[] };
         summary: string;
         base_version: number;
+        retry_count?: number;
       }>("/ai/replan", { method: "POST", body: JSON.stringify(body) });
-      return { aiRunId: result.ai_run_id, candidateItinerary: result.candidate_itinerary, summary: result.summary, baseVersion: result.base_version } satisfies ReplanResult;
+      return {
+        aiRunId: result.ai_run_id,
+        candidateItinerary: result.candidate_itinerary,
+        summary: result.summary,
+        baseVersion: result.base_version,
+        diff: result.diff,
+        retryCount: result.retry_count,
+      } satisfies ReplanResult;
     },
     applyRun: (tripId: number, runId: number, tripVersion: number) => request<Record<string, unknown>>(`/trips/${tripId}/ai-runs/${runId}/apply`, {
       method: "POST",
       body: JSON.stringify({ trip_version: tripVersion, apply_mode: "replace_itinerary", selected_candidate_ids: [] }),
+    }),
+    applyGuideRun: (tripId: number, runId: number, tripVersion: number, selectedCandidateIds: string[]) => request<Record<string, unknown>>(`/trips/${tripId}/ai-runs/${runId}/apply`, {
+      method: "POST",
+      body: JSON.stringify({ trip_version: tripVersion, apply_mode: "append_selected", selected_candidate_ids: selectedCandidateIds }),
     }),
     generate: (tripId: number, additionalRequirements?: string) => request<Record<string, unknown>>("/ai/generate", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements }) }),
     revise: (body: Record<string, unknown>) => request<Record<string, unknown>>("/ai/revise", { method: "POST", body: JSON.stringify(body) }),

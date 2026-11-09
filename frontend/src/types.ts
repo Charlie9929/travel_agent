@@ -44,4 +44,6 @@ export type ReplanResult = {
   summary: string;
   candidateItinerary?: unknown;
   baseVersion: number;
+  diff?: { ops: Record<string, unknown>[] };
+  retryCount?: number;
 };
