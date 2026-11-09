@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.dependencies import CurrentUser, DbSession, require_trip_member, require_trip_owner
 from app.core.errors import AppError, ForbiddenError, NotFoundError
-from app.db.models import Trip, TripMember, TripRevision, User
+from app.db.models import TravelRequirement, Trip, TripMember, TripRevision, User
 from app.schemas.common import ApiResponse
 from app.schemas.member import (
     JoinTripRequest,
@@ -17,9 +17,38 @@ from app.schemas.member import (
     ShareCodeRequest,
     ShareCodeResult,
 )
+from app.services.collaboration import queue_system_message
 from app.services.versioning import advance_trip_version
 
 router = APIRouter(tags=["members"])
+
+
+async def _member_read(session: DbSession, member: TripMember) -> MemberRead:
+    user = await session.get(User, member.user_id)
+    requirement = await session.scalar(
+        select(TravelRequirement).where(
+            TravelRequirement.trip_id == member.trip_id,
+            TravelRequirement.user_id == member.user_id,
+        )
+    )
+    filled_by = (
+        await session.get(User, requirement.filled_by)
+        if requirement and requirement.filled_by
+        else None
+    )
+    return MemberRead(
+        id=member.id,
+        trip_id=member.trip_id,
+        user_id=member.user_id,
+        role=member.role,
+        joined_at=member.joined_at,
+        username=user.username if user else None,
+        nickname=user.nickname if user else None,
+        avatar_url=user.avatar_url if user else None,
+        requirement_status=requirement.status if requirement else "pending",
+        requirement_filled_by=requirement.filled_by if requirement else None,
+        requirement_filled_by_nickname=filled_by.nickname if filled_by else None,
+    )
 
 
 @router.get("/trips/{trip_id}/members", response_model=ApiResponse[list[MemberRead]])
@@ -30,7 +59,7 @@ async def list_members(
     members = list(
         (await session.scalars(select(TripMember).where(TripMember.trip_id == trip_id))).all()
     )
-    return ApiResponse(data=[MemberRead.model_validate(member) for member in members])
+    return ApiResponse(data=[await _member_read(session, member) for member in members])
 
 
 @router.post(
@@ -52,9 +81,7 @@ async def invite_member(
     except IntegrityError as exc:
         await session.rollback()
         raise AppError("MEMBER_EXISTS", "该用户已经是行程成员", status_code=409) from exc
-    new_version = await advance_trip_version(
-        session, trip_id=trip_id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip_id, user_id=current_user.id)
     session.add(
         TripRevision(
             trip_id=trip_id,
@@ -65,13 +92,21 @@ async def invite_member(
             resource_id=member.id,
             diff_content={
                 "before": None,
-                "after": MemberRead.model_validate(member).model_dump(mode="json"),
+                "after": (await _member_read(session, member)).model_dump(mode="json"),
             },
         )
     )
+    invited_user = await session.get(User, payload.user_id)
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="member_joined",
+        content=f"{invited_user.nickname if invited_user else '新成员'} 已加入行程",
+        data={"user_id": payload.user_id, "role": payload.role, "trip_version": new_version},
+    )
     await session.commit()
     await session.refresh(member)
-    return ApiResponse(data=MemberRead.model_validate(member))
+    return ApiResponse(data=await _member_read(session, member))
 
 
 @router.put("/trips/{trip_id}/members/{user_id}", response_model=ApiResponse[dict[str, bool]])
@@ -86,17 +121,13 @@ async def update_member_role(
     if user_id == current_user.id:
         raise ForbiddenError("owner 不能修改自己的角色")
     member = await session.scalar(
-        select(TripMember).where(
-            TripMember.trip_id == trip_id, TripMember.user_id == user_id
-        )
+        select(TripMember).where(TripMember.trip_id == trip_id, TripMember.user_id == user_id)
     )
     if member is None:
         raise NotFoundError("成员不存在")
-    before = MemberRead.model_validate(member).model_dump(mode="json")
+    before = (await _member_read(session, member)).model_dump(mode="json")
     member.role = payload.role
-    new_version = await advance_trip_version(
-        session, trip_id=trip_id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip_id, user_id=current_user.id)
     session.add(
         TripRevision(
             trip_id=trip_id,
@@ -107,9 +138,17 @@ async def update_member_role(
             resource_id=member.id,
             diff_content={
                 "before": before,
-                "after": MemberRead.model_validate(member).model_dump(mode="json"),
+                "after": (await _member_read(session, member)).model_dump(mode="json"),
             },
         )
+    )
+    target_user = await session.get(User, user_id)
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="member_role_changed",
+        content=f"{target_user.nickname if target_user else '成员'} 的角色已调整为 {payload.role}",
+        data={"user_id": user_id, "role": payload.role, "trip_version": new_version},
     )
     await session.commit()
     return ApiResponse(data={"updated": True})
@@ -123,17 +162,13 @@ async def remove_member(
     if user_id == current_user.id:
         raise ForbiddenError("owner 不能移除自己")
     member = await session.scalar(
-        select(TripMember).where(
-            TripMember.trip_id == trip_id, TripMember.user_id == user_id
-        )
+        select(TripMember).where(TripMember.trip_id == trip_id, TripMember.user_id == user_id)
     )
     if member is None:
         raise NotFoundError("成员不存在")
-    before = MemberRead.model_validate(member).model_dump(mode="json")
+    before = (await _member_read(session, member)).model_dump(mode="json")
     member_id = member.id
-    new_version = await advance_trip_version(
-        session, trip_id=trip_id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip_id, user_id=current_user.id)
     await session.delete(member)
     session.add(
         TripRevision(
@@ -145,6 +180,14 @@ async def remove_member(
             resource_id=member_id,
             diff_content={"before": before, "after": None},
         )
+    )
+    target_user = await session.get(User, user_id)
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="member_left",
+        content=f"{target_user.nickname if target_user else '成员'} 已离开行程",
+        data={"user_id": user_id, "trip_version": new_version},
     )
     await session.commit()
     return ApiResponse(data={"deleted": True})
@@ -157,11 +200,9 @@ async def leave_trip(
     member = await require_trip_member(session, trip_id, current_user.id)
     if member.role == "owner":
         raise ForbiddenError("owner 不能直接退出行程")
-    before = MemberRead.model_validate(member).model_dump(mode="json")
+    before = (await _member_read(session, member)).model_dump(mode="json")
     member_id = member.id
-    new_version = await advance_trip_version(
-        session, trip_id=trip_id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip_id, user_id=current_user.id)
     await session.delete(member)
     session.add(
         TripRevision(
@@ -173,6 +214,13 @@ async def leave_trip(
             resource_id=member_id,
             diff_content={"before": before, "after": None},
         )
+    )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="member_left",
+        content=f"{current_user.nickname} 已离开行程",
+        data={"user_id": current_user.id, "trip_version": new_version},
     )
     await session.commit()
     return ApiResponse(data={"left": True})
@@ -191,9 +239,7 @@ async def create_share_code(
         raise NotFoundError("行程不存在")
     trip.share_code = secrets.token_urlsafe(18)[:32]
     trip.share_code_expires_at = datetime.now(UTC) + timedelta(hours=payload.expires_in_hours)
-    new_version = await advance_trip_version(
-        session, trip_id=trip_id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip_id, user_id=current_user.id)
     session.add(
         TripRevision(
             trip_id=trip_id,
@@ -249,9 +295,7 @@ async def join_trip(
     except IntegrityError as exc:
         await session.rollback()
         raise AppError("MEMBER_EXISTS", "你已经加入该行程", status_code=409) from exc
-    new_version = await advance_trip_version(
-        session, trip_id=trip.id, user_id=current_user.id
-    )
+    new_version = await advance_trip_version(session, trip_id=trip.id, user_id=current_user.id)
     session.add(
         TripRevision(
             trip_id=trip.id,
@@ -262,10 +306,17 @@ async def join_trip(
             resource_id=member.id,
             diff_content={
                 "before": None,
-                "after": MemberRead.model_validate(member).model_dump(mode="json"),
+                "after": (await _member_read(session, member)).model_dump(mode="json"),
             },
         )
     )
+    queue_system_message(
+        session,
+        trip_id=trip.id,
+        event_type="member_joined",
+        content=f"{current_user.nickname} 通过分享码加入了行程",
+        data={"user_id": current_user.id, "role": "editor", "trip_version": new_version},
+    )
     await session.commit()
     await session.refresh(member)
-    return ApiResponse(data=MemberRead.model_validate(member))
+    return ApiResponse(data=await _member_read(session, member))

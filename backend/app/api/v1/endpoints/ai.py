@@ -21,6 +21,7 @@ from app.services.ai_service import (
     generate_revision_candidate,
     retry_failed_ai_run,
 )
+from app.services.collaboration import candidate_presentation, queue_system_message
 from app.services.guide_import_service import apply_guide_candidates, generate_guide_candidates
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -38,6 +39,14 @@ async def generate(
         user_id=current_user.id,
         additional_requirements=payload.additional_requirements,
     )
+    queue_system_message(
+        session,
+        trip_id=payload.trip_id,
+        event_type="ai_itinerary_applied",
+        content=f"{current_user.nickname} 使用 Agent 生成了初始行程",
+        data={"ai_run_id": run.id, "trip_version": new_version, "run_type": "generate"},
+    )
+    await session.commit()
     return ApiResponse(
         data={
             "ai_run_id": run.id,
@@ -47,6 +56,7 @@ async def generate(
             "trip_version": new_version,
             "model": result.model,
             "latency_ms": result.latency_ms,
+            "integration_warnings": result.parsed_data.get("integration_warnings", []),
         }
     )
 
@@ -68,6 +78,7 @@ async def replan(
         candidate_replacements=payload.candidate_replacements,
     )
     candidate = result.parsed_data
+    presentation = candidate_presentation(candidate)
     return ApiResponse(
         data={
             "ai_run_id": run.id,
@@ -80,6 +91,7 @@ async def replan(
             "retry_count": run.retry_count,
             "model": result.model,
             "latency_ms": result.latency_ms,
+            **presentation,
         }
     )
 
@@ -98,6 +110,7 @@ async def revise(
         trip_version=payload.trip_version,
     )
     candidate = result.parsed_data
+    presentation = candidate_presentation(candidate)
     return ApiResponse(
         data={
             "ai_run_id": run.id,
@@ -110,6 +123,7 @@ async def revise(
             "retry_count": run.retry_count,
             "model": result.model,
             "latency_ms": result.latency_ms,
+            **presentation,
         }
     )
 
@@ -237,6 +251,14 @@ async def apply_ai_run(
             trip_version=payload.trip_version,
             selected_candidate_ids=payload.selected_candidate_ids,
         )
+        queue_system_message(
+            session,
+            trip_id=trip_id,
+            event_type="ai_itinerary_applied",
+            content=f"{current_user.nickname} 将攻略候选应用到了行程",
+            data={"ai_run_id": run.id, "trip_version": new_version, "run_type": run.run_type},
+        )
+        await session.commit()
         return ApiResponse(
             data={
                 "ai_run_id": run.id,
@@ -257,6 +279,14 @@ async def apply_ai_run(
         user_id=current_user.id,
         trip_version=payload.trip_version,
     )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="ai_itinerary_applied",
+        content=f"{current_user.nickname} 确认并应用了 Agent 的行程调整",
+        data={"ai_run_id": run.id, "trip_version": new_version, "run_type": run.run_type},
+    )
+    await session.commit()
     return ApiResponse(
         data={
             "ai_run_id": run.id,

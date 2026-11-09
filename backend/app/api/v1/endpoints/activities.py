@@ -14,6 +14,7 @@ from app.schemas.activity import (
     ActivityUpdate,
 )
 from app.schemas.common import ApiResponse
+from app.services.collaboration import queue_system_message
 from app.services.versioning import bump_trip_version
 
 router = APIRouter(prefix="/trips/{trip_id}/activities", tags=["activities"])
@@ -76,6 +77,13 @@ async def create_activity(
             diff_content={"before": None, "after": submitted},
         )
     )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="itinerary_changed",
+        content=f"{current_user.nickname} 新增了行程活动“{activity.title}”",
+        data={"action": "create", "activity_id": activity.id, "trip_version": new_version},
+    )
     await session.commit()
     await session.refresh(activity)
     return ApiResponse(
@@ -127,6 +135,13 @@ async def update_activity(
             diff_content={"before": before, "after": after},
         )
     )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="itinerary_changed",
+        content=f"{current_user.nickname} 调整了行程活动“{activity.title}”",
+        data={"action": "update", "activity_id": activity.id, "trip_version": new_version},
+    )
     await session.commit()
     return ApiResponse(data={"activity": after, "trip_version": new_version})
 
@@ -166,6 +181,13 @@ async def delete_activity(
             resource_id=activity_id,
             diff_content={"before": before, "after": None},
         )
+    )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="itinerary_changed",
+        content=f"{current_user.nickname} 删除了行程活动“{before['title']}”",
+        data={"action": "delete", "activity_id": activity_id, "trip_version": new_version},
     )
     await session.commit()
     return ApiResponse(data={"deleted": True, "trip_version": new_version})
@@ -230,6 +252,13 @@ async def reorder_activities(
                 "after": payload.id_order,
             },
         )
+    )
+    queue_system_message(
+        session,
+        trip_id=trip_id,
+        event_type="itinerary_changed",
+        content=f"{current_user.nickname} 调整了第 {payload.day_number} 天的活动顺序",
+        data={"action": "reorder", "day_number": payload.day_number, "trip_version": new_version},
     )
     await session.commit()
     return ApiResponse(data={"trip_version": new_version})

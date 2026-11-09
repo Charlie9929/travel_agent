@@ -20,6 +20,12 @@ class MemberRead(BaseModel):
     user_id: int
     role: str
     joined_at: datetime
+    username: str | None = None
+    nickname: str | None = None
+    avatar_url: str | None = None
+    requirement_status: str = "pending"
+    requirement_filled_by: int | None = None
+    requirement_filled_by_nickname: str | None = None
 
 
 class JoinTripRequest(BaseModel):

@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     llm_use_fake: bool = True
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-flash"
+    deepseek_model: str = "deepseek-chat"
     deepseek_timeout_seconds: float = 120.0
 
     amap_base_url: str = "https://restapi.amap.com"
@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     qweather_api_key: str = ""
     qweather_jwt_token: str = ""
     qweather_timeout_seconds: float = 10.0
+    qweather_retries: int = 2
+    qweather_cache_ttl_seconds: float = 600.0
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
