@@ -6,7 +6,9 @@ import { ChatSheet } from "./components/ChatSheet";
 import { CreateTripSheet } from "./components/CreateTripSheet";
 import { DataSheet, type DataRow } from "./components/DataSheet";
 import { ModalSheet } from "./components/ModalSheet";
-import { api, apiConfig, mapApiWorkspace, type ApiUserSearch } from "./api/client";
+import { TripSettingsSheet } from "./components/TripSettingsSheet";
+import { TripSwitcherSheet, type TripOption } from "./components/TripSwitcherSheet";
+import { api, apiConfig, mapApiWorkspace, type ApiTrip, type ApiUserSearch } from "./api/client";
 import { mockWorkspace } from "./mocks/data";
 import { FunctionsPage } from "./pages/FunctionsPage";
 import { HomePage } from "./pages/HomePage";
@@ -41,6 +43,8 @@ function hasToken() {
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>("lobby");
   const [workspace, setWorkspace] = useState<Workspace>(mockWorkspace);
+  const [trips, setTrips] = useState<ApiTrip[]>([]);
+  const [selectedTripId, setSelectedTripId] = useState<number>(() => Number(localStorage.getItem("travel-agent-selected-trip")) || mockWorkspace.tripId);
   const [hasWorkspace, setHasWorkspace] = useState(apiConfig.useMocks);
   const [authUser, setAuthUser] = useState<AuthUser | null>(apiConfig.useMocks ? { id: 1, username: "mock", nickname: "林予" } : null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -48,6 +52,8 @@ function App() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [createTripOpen, setCreateTripOpen] = useState(false);
+  const [tripSwitcherOpen, setTripSwitcherOpen] = useState(false);
+  const [tripSettingsOpen, setTripSettingsOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteQuery, setInviteQuery] = useState("");
   const [inviteUsers, setInviteUsers] = useState<ApiUserSearch[]>([]);
@@ -66,19 +72,24 @@ function App() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const refreshWorkspace = useCallback(async () => {
+  const refreshWorkspace = useCallback(async (preferredTripId?: number) => {
     if (apiConfig.useMocks) return;
     setLoading(true);
     try {
       const user = await api.auth.me();
       setAuthUser(user);
       const { items } = await api.trips.list();
-      if (!items[0]) {
+      setTrips(items);
+      const requestedId = preferredTripId ?? (Number(localStorage.getItem("travel-agent-selected-trip")) || null);
+      const selectedTrip = items.find((trip) => trip.id === requestedId) ?? items[0];
+      if (!selectedTrip) {
         setHasWorkspace(false);
         setCreateTripOpen(true);
         return;
       }
-      const [detail, members] = await Promise.all([api.trips.get(items[0].id), api.members.list(items[0].id)]);
+      setSelectedTripId(selectedTrip.id);
+      localStorage.setItem("travel-agent-selected-trip", String(selectedTrip.id));
+      const [detail, members] = await Promise.all([api.trips.get(selectedTrip.id), api.members.list(selectedTrip.id)]);
       setWorkspace(mapApiWorkspace(detail, members, mockWorkspace.members));
       setHasWorkspace(true);
       setCreateTripOpen(false);
@@ -125,11 +136,89 @@ function App() {
   const handleCreateTrip = async (values: { title: string; city: string; start_date: string; end_date: string }) => {
     setLoading(true);
     try {
-      await api.trips.create({ ...values, traveler_count: 1, preferences: {}, constraints: {} });
+      const createdTrip = await api.trips.create({ ...values, traveler_count: 1, preferences: {}, constraints: {} });
       setNotice("行程已创建");
-      await refreshWorkspace();
+      setCreateTripOpen(false);
+      await refreshWorkspace(createdTrip.id);
     } catch (error) {
       setNotice(`创建行程失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSelectTrip = async (tripId: number) => {
+    setSelectedTripId(tripId);
+    localStorage.setItem("travel-agent-selected-trip", String(tripId));
+    setTripSwitcherOpen(false);
+    setActiveTab("lobby");
+    await refreshWorkspace(tripId);
+    setNotice("已切换旅行");
+  };
+
+  const isTripOwner = apiConfig.useMocks || workspace.members.some((member) => member.id === authUser?.id && member.role === "房主");
+
+  const handleArchiveTrip = async () => {
+    if (!window.confirm("结束后会保留旅行记录，确认归档这场旅行吗？")) return;
+    if (apiConfig.useMocks) {
+      setTripSettingsOpen(false);
+      setNotice("Mock 模式未调用后端");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api.trips.update(workspace.tripId, { status: "finished", version: workspace.version });
+      setTripSettingsOpen(false);
+      await refreshWorkspace(workspace.tripId);
+      setNotice("旅行已归档");
+    } catch (error) {
+      setNotice(`归档旅行失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteTrip = async () => {
+    if (!window.confirm("删除后无法恢复，确认删除这场旅行吗？")) return;
+    if (apiConfig.useMocks) {
+      setTripSettingsOpen(false);
+      setNotice("Mock 模式未调用后端");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api.trips.remove(workspace.tripId, workspace.version);
+      localStorage.removeItem("travel-agent-selected-trip");
+      setTripSettingsOpen(false);
+      await refreshWorkspace();
+      setNotice("旅行已删除");
+    } catch (error) {
+      setNotice(`删除旅行失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLeaveTrip = async () => {
+    if (isTripOwner) {
+      setNotice("房主不能退出自己的旅行，请先结束或删除");
+      return;
+    }
+    if (!window.confirm("退出后将无法继续查看这场旅行，确认退出吗？")) return;
+    if (apiConfig.useMocks) {
+      setTripSettingsOpen(false);
+      setNotice("Mock 模式未调用后端");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api.members.leave(workspace.tripId);
+      localStorage.removeItem("travel-agent-selected-trip");
+      setTripSettingsOpen(false);
+      await refreshWorkspace();
+      setNotice("已退出旅行");
+    } catch (error) {
+      setNotice(`退出旅行失败：${(error as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -310,7 +399,7 @@ function App() {
   };
 
   const currentPage = activeTab === "lobby"
-    ? <LobbyPage workspace={workspace} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} />
+    ? <LobbyPage workspace={workspace} onSwitchTrip={() => setTripSwitcherOpen(true)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} />
     : activeTab === "world"
       ? <WorldPage workspace={workspace} onReplan={setReplanActivity} />
       : activeTab === "functions"
@@ -321,11 +410,17 @@ function App() {
     ? friends.map((friend) => ({ id: friend.id, nickname: friend.name, username: friend.name, can_invite: true, description: friend.description }))
     : inviteUsers.filter((user) => user.can_invite).map((user) => ({ ...user, description: user.username }));
 
+  const tripOptions: TripOption[] = apiConfig.useMocks
+    ? [{ id: workspace.tripId, title: workspace.title, city: workspace.city, startDate: workspace.startDate, endDate: workspace.endDate, status: "当前旅行" }]
+    : trips.map((trip) => ({ id: trip.id, title: trip.title, city: trip.city, startDate: trip.start_date, endDate: trip.end_date, status: trip.id === selectedTripId ? "当前旅行" : trip.status }));
+
   return (
     <AppShell activeTab={activeTab} onTabChange={setActiveTab}>
       {currentPage}
       {loading && <div className="sync-indicator">正在同步后端…</div>}
       {notice && <div className="toast" role="status">{notice}</div>}
+      {tripSwitcherOpen && <TripSwitcherSheet trips={tripOptions} currentTripId={selectedTripId} onSelect={(tripId) => void handleSelectTrip(tripId)} onCreate={() => { setTripSwitcherOpen(false); setCreateTripOpen(true); }} onSettings={() => { setTripSwitcherOpen(false); setTripSettingsOpen(true); }} onClose={() => setTripSwitcherOpen(false)} />}
+      {tripSettingsOpen && <TripSettingsSheet tripTitle={workspace.title} isOwner={isTripOwner} archived={trips.find((trip) => trip.id === workspace.tripId)?.status === "finished"} loading={loading} onArchive={() => void handleArchiveTrip()} onDelete={() => void handleDeleteTrip()} onLeave={() => void handleLeaveTrip()} onClose={() => setTripSettingsOpen(false)} />}
       {inviteOpen && <ModalSheet title="邀请同行者" onClose={() => setInviteOpen(false)}>
         <div className="sheet-intro">像微信拉群一样搜索用户并邀请加入本次旅行。</div>
         {!apiConfig.useMocks && <input className="text-input search-input" value={inviteQuery} onChange={(event) => void searchInviteUsers(event.target.value)} placeholder="搜索用户名或昵称" />}
@@ -344,7 +439,7 @@ function App() {
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
       {chatMode && <ChatSheet mode={chatMode} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat())} onClose={() => setChatMode(null)} />}
       {authOpen && !apiConfig.useMocks && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
-      {createTripOpen && !apiConfig.useMocks && authUser && !hasWorkspace && <CreateTripSheet onSubmit={(values) => void handleCreateTrip(values)} />}
+      {createTripOpen && !apiConfig.useMocks && authUser && <CreateTripSheet title={hasWorkspace ? "新建旅行" : "创建第一场旅行"} closable={hasWorkspace} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
       <footer className="build-note">{apiConfig.useMocks ? "Mock 数据模式" : `API：${apiConfig.baseUrl}`} · {formatDateRange(workspace.startDate, workspace.endDate)}</footer>
     </AppShell>
   );

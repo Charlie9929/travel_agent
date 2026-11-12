@@ -162,6 +162,14 @@ export const api = {
     get: (tripId: number) => request<ApiTripDetail>(`/trips/${tripId}`),
     revisions: (tripId: number) => request<Record<string, unknown>[]>(`/trips/${tripId}/revisions`),
     create: (body: Record<string, unknown>) => request<ApiTrip>("/trips", { method: "POST", body: JSON.stringify(body) }),
+    update: (tripId: number, body: { status: "draft" | "ongoing" | "finished"; version: number }) => request<ApiTrip>(`/trips/${tripId}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+    remove: (tripId: number, version: number) => request<Record<string, boolean>>(`/trips/${tripId}`, {
+      method: "DELETE",
+      body: JSON.stringify({ version }),
+    }),
   },
   members: {
     list: (tripId: number) => request<ApiMember[]>(`/trips/${tripId}/members`),
@@ -174,6 +182,7 @@ export const api = {
       body: JSON.stringify({ expires_in_hours: expiresInHours }),
     }),
     join: (shareCode: string) => request<ApiMember>("/trips/join", { method: "POST", body: JSON.stringify({ share_code: shareCode }) }),
+    leave: (tripId: number) => request<Record<string, boolean>>(`/trips/${tripId}/members/leave`, { method: "POST" }),
   },
   activities: {
     list: (tripId: number, dayNumber?: number) => request<ApiActivity[]>(`/trips/${tripId}/activities${dayNumber ? `?day_number=${dayNumber}` : ""}`),

@@ -1,4 +1,4 @@
-import { ArrowRight, LockKeyhole, Plus, UsersRound, ChevronRight } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, LockKeyhole, Plus, UsersRound } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBar } from "../components/StatusBar";
 import { lobbyScene } from "../mocks/data";
@@ -17,13 +17,13 @@ function MemberCard({ member, className }: { member?: Member; className: string 
   );
 }
 
-export function LobbyPage({ workspace, onInvite, onOpenLobby, lobbyUnread, onPrivateChat }: { workspace: Workspace; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void }) {
+export function LobbyPage({ workspace, onSwitchTrip, onInvite, onOpenLobby, lobbyUnread, onPrivateChat }: { workspace: Workspace; onSwitchTrip: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void }) {
   const dateRange = workspace.startDate && workspace.endDate ? `${workspace.startDate.slice(5).replace("-", "月")}日至${workspace.endDate.slice(5).replace("-", "月")}日` : "日期待定";
   return (
     <div className="page page-lobby">
       <StatusBar />
       <PageHeader
-        title={workspace.title}
+        title={<button className="trip-title-button" onClick={onSwitchTrip} aria-label="切换旅行"><span>{workspace.title}</span><ChevronDown size={20} /></button>}
         subtitle={`${workspace.city} · ${dateRange} · ${workspace.travelerCount}人`}
         action={<button className="icon-button" onClick={onInvite} aria-label="邀请同行者"><Plus size={24} /></button>}
       />
