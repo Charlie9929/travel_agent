@@ -40,10 +40,42 @@ export type Workspace = {
 };
 
 export type ReplanResult = {
-  aiRunId?: number;
+  aiRunId: number;
   summary: string;
   candidateItinerary?: unknown;
   baseVersion: number;
   diff?: { ops: Record<string, unknown>[] };
   retryCount?: number;
+  changedItems?: unknown[];
+  keptItems?: unknown[];
+};
+
+export type AuthUser = {
+  id: number;
+  username: string;
+  nickname: string;
+  avatarUrl?: string | null;
+};
+
+export type LobbyMessage = {
+  id: number;
+  tripId: number;
+  senderId: number | null;
+  senderNickname: string | null;
+  senderAvatarUrl?: string | null;
+  kind: string;
+  content: string;
+  visibility: string;
+  replyToId: number | null;
+  createdAt: string;
+};
+
+export type AgentMessage = {
+  id: number;
+  conversationId: number;
+  role: "user" | "assistant";
+  content: string;
+  status: string;
+  errorCode?: string | null;
+  createdAt: string;
 };

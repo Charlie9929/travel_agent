@@ -4,7 +4,8 @@ import { StatusBar } from "../components/StatusBar";
 import { lobbyScene } from "../mocks/data";
 import type { Member, Workspace } from "../types";
 
-function MemberCard({ member, className }: { member: Member; className: string }) {
+function MemberCard({ member, className }: { member?: Member; className: string }) {
+  if (!member) return null;
   return (
     <button className={`member-card ${className}`}>
       <span className="member-avatar" style={{ backgroundImage: `url(${member.avatar})`, backgroundPosition: member.avatarPosition ?? "0% center" }} aria-hidden="true" />
@@ -16,13 +17,14 @@ function MemberCard({ member, className }: { member: Member; className: string }
   );
 }
 
-export function LobbyPage({ workspace, onInvite, onPrivateChat }: { workspace: Workspace; onInvite: () => void; onPrivateChat: () => void }) {
+export function LobbyPage({ workspace, onInvite, onOpenLobby, lobbyUnread, onPrivateChat }: { workspace: Workspace; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void }) {
+  const dateRange = workspace.startDate && workspace.endDate ? `${workspace.startDate.slice(5).replace("-", "月")}日至${workspace.endDate.slice(5).replace("-", "月")}日` : "日期待定";
   return (
     <div className="page page-lobby">
       <StatusBar />
       <PageHeader
         title={workspace.title}
-        subtitle={`${workspace.city} · 11月6日至8日 · ${workspace.travelerCount}人`}
+        subtitle={`${workspace.city} · ${dateRange} · ${workspace.travelerCount}人`}
         action={<button className="icon-button" onClick={onInvite} aria-label="邀请同行者"><Plus size={24} /></button>}
       />
       <section className="lobby-scene" aria-label="同行成员">
@@ -39,8 +41,8 @@ export function LobbyPage({ workspace, onInvite, onPrivateChat }: { workspace: W
         <small>{workspace.budget} · 已分享 {workspace.sharedCount} 条</small>
         <ChevronRight className="shared-card-chevron" size={17} />
       </button>
-      <button className="list-row discussion-row" onClick={onPrivateChat}>
-        <UsersRound size={22} /><strong>大厅讨论</strong><span>12 条消息</span><ChevronRight size={18} />
+      <button className="list-row discussion-row" onClick={onOpenLobby}>
+        <UsersRound size={22} /><strong>大厅讨论</strong><span>{lobbyUnread ? `${lobbyUnread} 条未读` : "打开群聊"}</span><ChevronRight size={18} />
       </button>
       <button className="private-entry" onClick={onPrivateChat}>
         <LockKeyhole size={20} strokeWidth={1.6} />

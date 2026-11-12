@@ -7,9 +7,9 @@ const icons = [Clock3, WalletCards, Camera];
 
 export function FunctionsPage({ workspace, onOpen }: { workspace: Workspace; onOpen: (label: string) => void }) {
   const rows = [
-    ["行程版本", `3天 · 第 ${workspace.version} 版`],
-    ["记账与分账", "共 ¥1,280 · 2笔待分摊"],
-    ["旅行高光", "还没有记录"],
+    ["行程版本", `当前第 ${workspace.version} 版 · 查看真实记录`],
+    ["记账与分账", "查看账单和成员分摊"],
+    ["旅行高光", "查看本次旅行记录"],
   ] as const;
   return (
     <div className="page page-functions">
