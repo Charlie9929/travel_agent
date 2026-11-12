@@ -1,41 +1,30 @@
-import { ArrowRight, ChevronDown, ChevronRight, LockKeyhole, Plus, UsersRound } from "lucide-react";
+import { ArrowRight, ChevronRight, LockKeyhole, Plus, UsersRound } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBar } from "../components/StatusBar";
-import { lobbyScene } from "../mocks/data";
 import type { Member, Workspace } from "../types";
 
-function MemberCard({ member, className }: { member?: Member; className: string }) {
-  if (!member) return null;
+function MemberCard({ member }: { member: Member }) {
   return (
-    <button className={`member-card ${className}`}>
-      <span className="member-avatar" style={{ backgroundImage: `url(${member.avatar})`, backgroundPosition: member.avatarPosition ?? "0% center" }} aria-hidden="true" />
-      <strong>{member.name}</strong>
-      {member.role && <span>{member.role}</span>}
-      <span>{member.status}</span>
-      {member.proxy && <small>{member.proxy}</small>}
-    </button>
+    <article className="member-card">
+      <span className={`member-avatar ${member.avatar ? "" : "member-avatar-fallback"}`} style={member.avatar ? { backgroundImage: `url(${member.avatar})`, backgroundPosition: member.avatarPosition ?? "center" } : undefined} aria-hidden="true">{member.avatar ? "" : member.name.slice(0, 1)}</span>
+      <span className="member-copy"><strong>{member.name}</strong><small>{[member.role, member.status, member.proxy].filter(Boolean).join(" · ")}</small></span>
+    </article>
   );
 }
 
-export function LobbyPage({ workspace, onSwitchTrip, onInvite, onOpenLobby, lobbyUnread, onPrivateChat }: { workspace: Workspace; onSwitchTrip: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void }) {
+export function LobbyPage({ workspace, onBack, onInvite, onOpenLobby, lobbyUnread, onPrivateChat, onOpenRequirements }: { workspace: Workspace; onBack: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void; onOpenRequirements: () => void }) {
   const dateRange = workspace.startDate && workspace.endDate ? `${workspace.startDate.slice(5).replace("-", "月")}日至${workspace.endDate.slice(5).replace("-", "月")}日` : "日期待定";
   return (
     <div className="page page-lobby">
       <StatusBar />
       <PageHeader
-        title={<button className="trip-title-button" onClick={onSwitchTrip} aria-label="切换旅行"><span>{workspace.title}</span><ChevronDown size={20} /></button>}
+        title={workspace.title}
         subtitle={`${workspace.city} · ${dateRange} · ${workspace.travelerCount}人`}
         action={<button className="icon-button" onClick={onInvite} aria-label="邀请同行者"><Plus size={24} /></button>}
+        onBack={onBack}
       />
-      <section className="lobby-scene" aria-label="同行成员">
-        <img src={lobbyScene} alt="雨林溪流场景" />
-        <div className="scene-overlay" />
-        <MemberCard member={workspace.members[0]} className="member-one" />
-        <MemberCard member={workspace.members[1]} className="member-two" />
-        <MemberCard member={workspace.members[2]} className="member-three" />
-        <MemberCard member={workspace.members[3]} className="member-four" />
-      </section>
-      <button className="shared-card" onClick={() => onPrivateChat()}>
+      <section className="member-grid" aria-label="同行成员">{workspace.members.map((member) => <MemberCard member={member} key={member.id} />)}</section>
+      <button className="shared-card" onClick={onOpenRequirements}>
         <div className="shared-card-title"><strong>同行者的想法</strong><span>同行者可见</span></div>
         <p>{workspace.sharedSummary}</p>
         <small>{workspace.budget} · 已分享 {workspace.sharedCount} 条</small>

@@ -1,107 +1,160 @@
 import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "./components/AppShell";
+import { ActivityEditorSheet, type ActivityFormValues } from "./components/ActivityEditorSheet";
 import { AuthSheet } from "./components/AuthSheet";
 import { CandidateSheet } from "./components/CandidateSheet";
 import { ChatSheet } from "./components/ChatSheet";
-import { CreateTripSheet } from "./components/CreateTripSheet";
+import { CreateTripSheet, type CreateTripValues } from "./components/CreateTripSheet";
 import { DataSheet, type DataRow } from "./components/DataSheet";
+import { ExpenseSheet, type ExpenseFormValues } from "./components/ExpenseSheet";
+import { HighlightSheet } from "./components/HighlightSheet";
 import { ModalSheet } from "./components/ModalSheet";
+import { PasswordSheet } from "./components/PasswordSheet";
 import { TripSettingsSheet } from "./components/TripSettingsSheet";
-import { TripSwitcherSheet, type TripOption } from "./components/TripSwitcherSheet";
-import { api, apiConfig, mapApiWorkspace, type ApiTrip, type ApiUserSearch } from "./api/client";
-import { mockWorkspace } from "./mocks/data";
+import {
+  ApiError,
+  api,
+  apiConfig,
+  mapApiWorkspace,
+  type ApiRequirement,
+  type ApiTrip,
+  type ApiUserSearch,
+  type JsonObject,
+} from "./api/client";
 import { FunctionsPage } from "./pages/FunctionsPage";
 import { HomePage } from "./pages/HomePage";
+import { LobbyListPage, type LobbyPreview } from "./pages/LobbyListPage";
 import { LobbyPage } from "./pages/LobbyPage";
+import { TripListPage } from "./pages/TripListPage";
 import { WorldPage } from "./pages/WorldPage";
 import type { Activity, AgentMessage, AuthUser, LobbyMessage, ReplanResult, Tab, Workspace } from "./types";
-
-const friends = [
-  { id: 21, name: "乔乔", description: "杭州同行者" },
-  { id: 22, name: "阿澈", description: "已在本次旅行" },
-  { id: 23, name: "小满", description: "最近联系" },
-];
-
-const mockLobbyMessages: LobbyMessage[] = [
-  { id: 1, tripId: 1, senderId: 2, senderNickname: "阿澈", content: "周六中午要不要在西湖附近吃？", kind: "user", visibility: "trip", replyToId: null, createdAt: new Date().toISOString() },
-  { id: 2, tripId: 1, senderId: null, senderNickname: null, content: "可以保留湖边午餐，我会根据大家的需求调整下午路线。", kind: "agent", visibility: "trip", replyToId: 1, createdAt: new Date().toISOString() },
-];
-
-const mockAgentMessages: AgentMessage[] = [
-  { id: 1, conversationId: 1, role: "assistant", content: "你好，可以私下告诉我你的偏好和需要避开的事项。", status: "succeeded", createdAt: new Date().toISOString() },
-];
-
-function formatDateRange(start: string, end: string) {
-  if (!start || !end) return "日期待定";
-  return `${start.slice(5).replace("-", "月")}日—${end.slice(5).replace("-", "月")}日`;
-}
 
 function hasToken() {
   return Boolean(localStorage.getItem("travel-agent-token") || import.meta.env.VITE_ACCESS_TOKEN);
 }
 
+function shareCodeFromPath() {
+  const match = window.location.pathname.match(/^\/join\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function candidateFromResponse(response: JsonObject): ReplanResult {
+  const diff = response.diff as { ops: JsonObject[] } | undefined;
+  return {
+    aiRunId: Number(response.ai_run_id),
+    summary: String(response.summary ?? "Agent 已生成一版调整建议"),
+    candidateItinerary: response.candidate_itinerary,
+    baseVersion: Number(response.base_version),
+    diff,
+    retryCount: Number(response.retry_count ?? 0),
+    changedItems: Array.isArray(response.changed_items) ? response.changed_items : diff?.ops,
+    keptItems: Array.isArray(response.kept_items) ? response.kept_items : [],
+  };
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>("lobby");
-  const [workspace, setWorkspace] = useState<Workspace>(mockWorkspace);
+  const [activeTab, setActiveTab] = useState<Tab>("world");
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [requirements, setRequirements] = useState<ApiRequirement[]>([]);
   const [trips, setTrips] = useState<ApiTrip[]>([]);
-  const [selectedTripId, setSelectedTripId] = useState<number>(() => Number(localStorage.getItem("travel-agent-selected-trip")) || mockWorkspace.tripId);
-  const [hasWorkspace, setHasWorkspace] = useState(apiConfig.useMocks);
-  const [authUser, setAuthUser] = useState<AuthUser | null>(apiConfig.useMocks ? { id: 1, username: "mock", nickname: "林予" } : null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [createTripOpen, setCreateTripOpen] = useState(false);
-  const [tripSwitcherOpen, setTripSwitcherOpen] = useState(false);
+  const [tripDetailOpen, setTripDetailOpen] = useState(false);
+  const [lobbyDetailOpen, setLobbyDetailOpen] = useState(false);
   const [tripSettingsOpen, setTripSettingsOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteQuery, setInviteQuery] = useState("");
   const [inviteUsers, setInviteUsers] = useState<ApiUserSearch[]>([]);
   const [inviteLoading, setInviteLoading] = useState(false);
   const [chatMode, setChatMode] = useState<"lobby" | "agent" | null>(null);
-  const [lobbyMessages, setLobbyMessages] = useState<LobbyMessage[]>(apiConfig.useMocks ? mockLobbyMessages : []);
+  const [lobbyMessages, setLobbyMessages] = useState<LobbyMessage[]>([]);
   const [lobbyUnread, setLobbyUnread] = useState(0);
-  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>(apiConfig.useMocks ? mockAgentMessages : []);
+  const [lobbyPreviews, setLobbyPreviews] = useState<LobbyPreview[]>([]);
+  const [lobbyListLoading, setLobbyListLoading] = useState(false);
+  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [agentConversationId, setAgentConversationId] = useState<number | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [replanActivity, setReplanActivity] = useState<Activity | null>(null);
+  const [activityEditor, setActivityEditor] = useState<{ activity?: Activity; day: number } | null>(null);
+  const [expenseActivity, setExpenseActivity] = useState<Activity | null | undefined>(undefined);
+  const [recordActivity, setRecordActivity] = useState<Activity | null | undefined>(undefined);
   const [replanResult, setReplanResult] = useState<ReplanResult | null>(null);
   const [replanLoading, setReplanLoading] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [reviseOpen, setReviseOpen] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideResult, setGuideResult] = useState<{ runId: number; candidates: JsonObject[]; selected: string[] } | null>(null);
+  const [requirementsOpen, setRequirementsOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [dataSheet, setDataSheet] = useState<{ title: string; rows: DataRow[] } | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const handleUnauthorized = useCallback(() => {
+    api.auth.logout();
+    localStorage.removeItem("travel-agent-selected-trip");
+    setAuthUser(null);
+    setWorkspace(null);
+    setTrips([]);
+    setAuthOpen(true);
+  }, []);
+
   const refreshWorkspace = useCallback(async (preferredTripId?: number) => {
-    if (apiConfig.useMocks) return;
     setLoading(true);
     try {
       const user = await api.auth.me();
       setAuthUser(user);
-      const { items } = await api.trips.list();
-      setTrips(items);
-      const requestedId = preferredTripId ?? (Number(localStorage.getItem("travel-agent-selected-trip")) || null);
-      const selectedTrip = items.find((trip) => trip.id === requestedId) ?? items[0];
-      if (!selectedTrip) {
-        setHasWorkspace(false);
-        setCreateTripOpen(true);
-        return;
+      let joinedTripId: number | undefined;
+      const shareCode = shareCodeFromPath();
+      if (shareCode) {
+        try {
+          const membership = await api.members.join(shareCode);
+          joinedTripId = membership.trip_id;
+          window.history.replaceState({}, "", "/");
+          setNotice("已通过分享码加入旅行");
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.code !== "MEMBER_EXISTS") throw error;
+          window.history.replaceState({}, "", "/");
+        }
       }
-      setSelectedTripId(selectedTrip.id);
+      const { items } = await api.trips.list({ pageSize: 100 });
+      setTrips(items);
+      const requestedId = joinedTripId ?? preferredTripId ?? (Number(localStorage.getItem("travel-agent-selected-trip")) || 0);
+      const selectedTrip = items.find((trip) => trip.id === requestedId) ?? items.find((trip) => trip.status !== "finished") ?? items[0];
+      if (!selectedTrip) {
+        setWorkspace(null);
+        setRequirements([]);
+        return null;
+      }
       localStorage.setItem("travel-agent-selected-trip", String(selectedTrip.id));
-      const [detail, members] = await Promise.all([api.trips.get(selectedTrip.id), api.members.list(selectedTrip.id)]);
-      setWorkspace(mapApiWorkspace(detail, members, mockWorkspace.members));
-      setHasWorkspace(true);
+      const [detail, members, requirementItems] = await Promise.all([
+        api.trips.get(selectedTrip.id),
+        api.members.list(selectedTrip.id),
+        api.requirements.list(selectedTrip.id),
+      ]);
+      setRequirements(requirementItems);
+      const mappedWorkspace = mapApiWorkspace(detail, members, requirementItems, items.filter((trip) => trip.status === "finished" && trip.id !== selectedTrip.id));
+      setWorkspace(mappedWorkspace);
       setCreateTripOpen(false);
+      return mappedWorkspace;
     } catch (error) {
-      setNotice(`后端连接失败：${(error as Error).message}`);
+      if (error instanceof ApiError && error.status === 401) {
+        handleUnauthorized();
+      } else {
+        setNotice(`读取真实数据失败：${(error as Error).message}`);
+      }
+      return null;
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [handleUnauthorized]);
 
   useEffect(() => {
-    if (apiConfig.useMocks) return;
     if (!hasToken()) {
       setAuthOpen(true);
       return;
@@ -111,20 +164,43 @@ function App() {
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(""), 3200);
+    const timer = window.setTimeout(() => setNotice(""), 4200);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (activeTab !== "lobby" || !authUser || !trips.length) {
+      if (!trips.length) setLobbyPreviews([]);
+      return;
+    }
+    let cancelled = false;
+    setLobbyListLoading(true);
+    void Promise.all(trips.map(async (trip) => {
+      try {
+        const result = await api.collaboration.lobby.list(trip.id);
+        const latest = result.items.at(-1);
+        return { tripId: trip.id, lastMessage: latest?.content ?? "", lastAt: latest?.createdAt ?? null, unread: result.unread_count } satisfies LobbyPreview;
+      } catch {
+        return { tripId: trip.id, lastMessage: "消息暂时无法读取", lastAt: null, unread: 0 } satisfies LobbyPreview;
+      }
+    })).then((items) => {
+      if (!cancelled) setLobbyPreviews(items);
+    }).finally(() => {
+      if (!cancelled) setLobbyListLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeTab, authUser, trips]);
 
   const handleAuth = async (values: { username: string; password: string; nickname: string }) => {
     setAuthLoading(true);
     setAuthError("");
     try {
-      const result = authMode === "login"
-        ? await api.auth.login(values.username, values.password)
-        : await api.auth.register(values.username, values.password, values.nickname);
+      const result = authMode === "login" ? await api.auth.login(values.username, values.password) : await api.auth.register(values.username, values.password, values.nickname);
       setAuthUser(result.user);
       setAuthOpen(false);
-      setNotice("登录成功，正在读取真实行程");
+      setTripDetailOpen(false);
+      setLobbyDetailOpen(false);
+      setNotice("登录成功，正在读取行程");
       await refreshWorkspace();
     } catch (error) {
       setAuthError((error as Error).message);
@@ -133,13 +209,28 @@ function App() {
     }
   };
 
-  const handleCreateTrip = async (values: { title: string; city: string; start_date: string; end_date: string }) => {
+  const handleLogout = () => {
+    api.auth.logout();
+    localStorage.removeItem("travel-agent-selected-trip");
+    setWorkspace(null);
+    setTrips([]);
+    setAuthUser(null);
+    setAuthOpen(true);
+    setActiveTab("world");
+    setTripDetailOpen(false);
+    setLobbyDetailOpen(false);
+  };
+
+  const handleCreateTrip = async (values: CreateTripValues) => {
     setLoading(true);
     try {
-      const createdTrip = await api.trips.create({ ...values, traveler_count: 1, preferences: {}, constraints: {} });
-      setNotice("行程已创建");
+      const createdTrip = await api.trips.create({ ...values, preferences: {}, constraints: {} });
       setCreateTripOpen(false);
       await refreshWorkspace(createdTrip.id);
+      setGenerateOpen(true);
+      setActiveTab("world");
+      setTripDetailOpen(true);
+      setNotice("行程已创建，请补充要求后让 Agent 生成路线");
     } catch (error) {
       setNotice(`创建行程失败：${(error as Error).message}`);
     } finally {
@@ -148,23 +239,24 @@ function App() {
   };
 
   const handleSelectTrip = async (tripId: number) => {
-    setSelectedTripId(tripId);
-    localStorage.setItem("travel-agent-selected-trip", String(tripId));
-    setTripSwitcherOpen(false);
-    setActiveTab("lobby");
+    setActiveTab("world");
     await refreshWorkspace(tripId);
+    setTripDetailOpen(true);
     setNotice("已切换旅行");
   };
 
-  const isTripOwner = apiConfig.useMocks || workspace.members.some((member) => member.id === authUser?.id && member.role === "房主");
+  const handleOpenHistory = async (tripId: number) => {
+    const selectedWorkspace = await refreshWorkspace(tripId);
+    if (!selectedWorkspace) return;
+    setTripDetailOpen(false);
+    setActiveTab("functions");
+    await openFeature("旅行手帐", selectedWorkspace);
+  };
+
+  const isTripOwner = Boolean(workspace && workspace.members.some((member) => member.id === authUser?.id && member.role === "房主"));
 
   const handleArchiveTrip = async () => {
-    if (!window.confirm("结束后会保留旅行记录，确认归档这场旅行吗？")) return;
-    if (apiConfig.useMocks) {
-      setTripSettingsOpen(false);
-      setNotice("Mock 模式未调用后端");
-      return;
-    }
+    if (!workspace || !window.confirm("结束后会保留旅行记录，确认归档这场旅行吗？")) return;
     setLoading(true);
     try {
       await api.trips.update(workspace.tripId, { status: "finished", version: workspace.version });
@@ -179,18 +271,14 @@ function App() {
   };
 
   const handleDeleteTrip = async () => {
-    if (!window.confirm("删除后无法恢复，确认删除这场旅行吗？")) return;
-    if (apiConfig.useMocks) {
-      setTripSettingsOpen(false);
-      setNotice("Mock 模式未调用后端");
-      return;
-    }
+    if (!workspace || !window.confirm("删除后无法恢复，确认删除这场旅行吗？")) return;
     setLoading(true);
     try {
       await api.trips.remove(workspace.tripId, workspace.version);
       localStorage.removeItem("travel-agent-selected-trip");
       setTripSettingsOpen(false);
       await refreshWorkspace();
+      setTripDetailOpen(false);
       setNotice("旅行已删除");
     } catch (error) {
       setNotice(`删除旅行失败：${(error as Error).message}`);
@@ -200,22 +288,20 @@ function App() {
   };
 
   const handleLeaveTrip = async () => {
+    if (!workspace) return;
     if (isTripOwner) {
       setNotice("房主不能退出自己的旅行，请先结束或删除");
       return;
     }
     if (!window.confirm("退出后将无法继续查看这场旅行，确认退出吗？")) return;
-    if (apiConfig.useMocks) {
-      setTripSettingsOpen(false);
-      setNotice("Mock 模式未调用后端");
-      return;
-    }
     setLoading(true);
     try {
       await api.members.leave(workspace.tripId);
       localStorage.removeItem("travel-agent-selected-trip");
       setTripSettingsOpen(false);
       await refreshWorkspace();
+      setTripDetailOpen(false);
+      setLobbyDetailOpen(false);
       setNotice("已退出旅行");
     } catch (error) {
       setNotice(`退出旅行失败：${(error as Error).message}`);
@@ -224,16 +310,18 @@ function App() {
     }
   };
 
-  const openLobby = async () => {
+  const openLobby = async (tripId = workspace?.tripId) => {
+    if (!tripId) return;
     setChatMode("lobby");
-    if (apiConfig.useMocks || !hasWorkspace) return;
     setChatLoading(true);
     try {
-      const result = await api.collaboration.lobby.list(workspace.tripId);
+      const result = await api.collaboration.lobby.list(tripId);
       setLobbyMessages(result.items);
       setLobbyUnread(result.unread_count);
       const latest = result.items.at(-1);
-      if (latest) await api.collaboration.lobby.markRead(workspace.tripId, latest.id);
+      if (latest) await api.collaboration.lobby.markRead(tripId, latest.id);
+      if (latest) setLobbyUnread(0);
+      setLobbyPreviews((items) => items.map((item) => item.tripId === tripId ? { ...item, unread: 0 } : item));
     } catch (error) {
       setNotice(`读取大厅消息失败：${(error as Error).message}`);
     } finally {
@@ -241,9 +329,19 @@ function App() {
     }
   };
 
+  const handleOpenTripChat = async (tripId: number) => {
+    const selectedWorkspace = await refreshWorkspace(tripId);
+    if (selectedWorkspace) await openLobby(tripId);
+  };
+
+  const handleManageLobby = async (tripId: number) => {
+    const selectedWorkspace = await refreshWorkspace(tripId);
+    if (selectedWorkspace) setLobbyDetailOpen(true);
+  };
+
   const openAgentChat = async () => {
+    if (!workspace) return;
     setChatMode("agent");
-    if (apiConfig.useMocks || !hasWorkspace) return;
     setChatLoading(true);
     try {
       const conversation = await api.collaboration.agent.conversation(workspace.tripId);
@@ -257,17 +355,7 @@ function App() {
   };
 
   const handleChatSend = async (content: string) => {
-    if (!chatMode) return;
-    if (apiConfig.useMocks) {
-      const id = Date.now();
-      if (chatMode === "lobby") {
-        const userMessage: LobbyMessage = { id, tripId: workspace.tripId, senderId: 1, senderNickname: "我", content, kind: "user", visibility: "trip", replyToId: null, createdAt: new Date().toISOString() };
-        setLobbyMessages((items) => [...items, userMessage, ...(content.includes("@Agent") ? [{ ...userMessage, id: id + 1, senderId: null, senderNickname: null, kind: "agent", content: "我会结合大家的需求给出一版调整建议。" }] : [])]);
-      } else {
-        setAgentMessages((items) => [...items, { id, conversationId: 1, role: "user", content, status: "succeeded", createdAt: new Date().toISOString() }, { id: id + 1, conversationId: 1, role: "assistant", content: "我记下了，会在需要公开建议时只发布必要的行程调整。", status: "succeeded", createdAt: new Date().toISOString() }]);
-      }
-      return;
-    }
+    if (!chatMode || !workspace) return;
     setChatLoading(true);
     try {
       if (chatMode === "lobby") {
@@ -286,7 +374,10 @@ function App() {
 
   const searchInviteUsers = async (query: string) => {
     setInviteQuery(query);
-    if (apiConfig.useMocks || !query.trim()) return;
+    if (!workspace || !query.trim()) {
+      setInviteUsers([]);
+      return;
+    }
     setInviteLoading(true);
     try {
       setInviteUsers(await api.users.search(query, workspace.tripId));
@@ -298,39 +389,61 @@ function App() {
   };
 
   const handleInvite = async (userId: number) => {
-    if (apiConfig.useMocks) {
-      setNotice("已发送邀请（Mock）");
-      return;
-    }
+    if (!workspace) return;
     try {
       await api.members.invite(workspace.tripId, userId);
-      setNotice("邀请已发送");
-      await refreshWorkspace();
+      setNotice("成员已加入旅行");
+      await refreshWorkspace(workspace.tripId);
     } catch (error) {
       setNotice(`邀请失败：${(error as Error).message}`);
     }
   };
 
   const handleCopyInvite = async () => {
+    if (!workspace) return;
     try {
-      const code = apiConfig.useMocks ? "SHANXING-DEMO" : (await api.members.createShareCode(workspace.tripId)).share_code;
-      await navigator.clipboard?.writeText(`${window.location.origin}/join/${code}`);
-      setNotice("邀请链接已复制");
+      const result = await api.members.createShareCode(workspace.tripId);
+      await navigator.clipboard.writeText(`${window.location.origin}/join/${result.share_code}`);
+      setNotice(`邀请链接已复制，有效期至 ${new Date(result.expires_at).toLocaleString("zh-CN")}`);
     } catch (error) {
       setNotice(`生成邀请链接失败：${(error as Error).message}`);
     }
   };
 
-  const handleReplan = async (instruction: string) => {
-    if (!replanActivity) return;
-    if (apiConfig.useMocks) {
-      setReplanActivity(null);
-      setReplanResult({ aiRunId: 0, summary: "乘车去湖边喝茶，其他三站照旧。", baseVersion: workspace.version, changedItems: ["14:00 湖滨漫步 → 湖边喝茶", "减少连续步行时间"], keptItems: ["上午浙博孤山馆", "12:00 湖畔午餐", "18:30 晚餐"] });
-      return;
-    }
+  const handleGenerate = async (requirementsText: string) => {
+    if (!workspace) return;
     setReplanLoading(true);
     try {
-      const result = await api.ai.replan({ trip_id: workspace.tripId, day_number: replanActivity.day, adjustment_requirements: instruction, trip_version: workspace.version, after_time: replanActivity.time });
+      await api.ai.generate(workspace.tripId, requirementsText || undefined);
+      setGenerateOpen(false);
+      await refreshWorkspace(workspace.tripId);
+      setNotice("Agent 已生成并保存初始行程");
+    } catch (error) {
+      setNotice(`生成行程失败：${(error as Error).message}`);
+    } finally {
+      setReplanLoading(false);
+    }
+  };
+
+  const handleRevise = async (instruction: string) => {
+    if (!workspace) return;
+    setReplanLoading(true);
+    try {
+      const result = await api.ai.revise({ trip_id: workspace.tripId, changed_constraints: {}, user_instruction: instruction, trip_version: workspace.version });
+      setReviseOpen(false);
+      setReplanResult(candidateFromResponse(result));
+    } catch (error) {
+      setNotice(`生成整体修订失败：${(error as Error).message}`);
+    } finally {
+      setReplanLoading(false);
+    }
+  };
+
+  const handleReplan = async (instruction: string) => {
+    if (!replanActivity || !workspace) return;
+    setReplanLoading(true);
+    try {
+      const result = await api.ai.replan({ trip_id: workspace.tripId, day_number: replanActivity.day, adjustment_requirements: instruction, trip_version: workspace.version, after_time: replanActivity.time === "待定" ? undefined : replanActivity.time });
       setReplanActivity(null);
       setReplanResult(result);
     } catch (error) {
@@ -340,18 +453,13 @@ function App() {
     }
   };
 
-  const handleApplyReplan = async () => {
-    if (!replanResult) return;
-    if (apiConfig.useMocks || !replanResult.aiRunId) {
-      setReplanResult(null);
-      setNotice("已应用调整建议（Mock）");
-      return;
-    }
+  const handleApplyCandidate = async () => {
+    if (!replanResult || !workspace) return;
     setReplanLoading(true);
     try {
       await api.ai.applyRun(workspace.tripId, replanResult.aiRunId, workspace.version);
       setReplanResult(null);
-      await refreshWorkspace();
+      await refreshWorkspace(workspace.tripId);
       setNotice("调整已应用，行程已刷新");
     } catch (error) {
       setNotice(`应用调整失败：${(error as Error).message}`);
@@ -360,35 +468,167 @@ function App() {
     }
   };
 
-  const openFeature = async (label: string) => {
+  const handleSaveActivity = async (values: ActivityFormValues) => {
+    if (!workspace || !activityEditor) return;
+    setLoading(true);
+    try {
+      if (activityEditor.activity) {
+        await api.activities.update(workspace.tripId, activityEditor.activity.id, { ...values, trip_version: workspace.version });
+        setNotice("活动已更新");
+      } else {
+        await api.activities.create(workspace.tripId, { ...values, extra: {}, trip_version: workspace.version });
+        setNotice("活动已添加");
+      }
+      setActivityEditor(null);
+      await refreshWorkspace(workspace.tripId);
+    } catch (error) {
+      setNotice(`保存活动失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteActivity = async (activity: Activity) => {
+    if (!workspace || !window.confirm(`确认删除“${activity.title}”吗？该操作会生成版本记录。`)) return;
+    setLoading(true);
+    try {
+      await api.activities.remove(workspace.tripId, activity.id, workspace.version);
+      await refreshWorkspace(workspace.tripId);
+      setNotice("活动已删除");
+    } catch (error) {
+      setNotice(`删除活动失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateExpense = async (values: ExpenseFormValues) => {
+    if (!workspace) return;
+    setLoading(true);
+    try {
+      await api.expenses.create(workspace.tripId, values);
+      setExpenseActivity(undefined);
+      setNotice("账单已保存，可以在旅行工具中统一查看和结算");
+    } catch (error) {
+      setNotice(`保存账单失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateRecord = async (title: string, content: string, files: File[]) => {
+    if (!workspace) return;
+    setLoading(true);
+    try {
+      const activity = recordActivity || undefined;
+      const occurredAt = activity
+        ? new Date(`${activity.date}T${activity.time === "待定" ? "12:00" : activity.time}:00`).toISOString()
+        : new Date().toISOString();
+      const record = await api.highlights.create(workspace.tripId, {
+        title,
+        content: content || undefined,
+        activity_id: activity?.id,
+        occurred_at: occurredAt,
+      });
+      for (const file of files) await api.highlights.uploadImage(workspace.tripId, record.id, file);
+      setRecordActivity(undefined);
+      setNotice(`旅行记录已保存${files.length ? `，已上传 ${files.length} 张照片` : ""}`);
+    } catch (error) {
+      setNotice(`保存旅行记录失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveRequirement = async (contentText: string, sharedSummary: string) => {
+    if (!workspace) return;
+    setLoading(true);
+    try {
+      await api.requirements.saveMine(workspace.tripId, { notes: contentText });
+      if (sharedSummary.trim()) await api.requirements.shareMine(workspace.tripId, sharedSummary.trim());
+      else await api.requirements.unshareMine(workspace.tripId);
+      setRequirementsOpen(false);
+      await refreshWorkspace(workspace.tripId);
+      setNotice("旅行需求已保存");
+    } catch (error) {
+      setNotice(`保存需求失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImportGuide = async (text: string) => {
+    if (!workspace) return;
+    setLoading(true);
+    try {
+      const result = await api.ai.importGuide(workspace.tripId, text);
+      const candidates = Array.isArray(result.candidates) ? result.candidates as JsonObject[] : [];
+      setGuideOpen(false);
+      setGuideResult({ runId: Number(result.ai_run_id), candidates, selected: [] });
+    } catch (error) {
+      setNotice(`攻略导入失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApplyGuide = async () => {
+    if (!workspace || !guideResult?.selected.length) return;
+    setLoading(true);
+    try {
+      await api.ai.applyGuideRun(workspace.tripId, guideResult.runId, workspace.version, guideResult.selected);
+      setGuideResult(null);
+      await refreshWorkspace(workspace.tripId);
+      setNotice("已将选中的攻略条目加入行程");
+    } catch (error) {
+      setNotice(`应用攻略候选失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openFeature = async (label: string, targetWorkspace = workspace) => {
+    if (!targetWorkspace) return;
     if (label === "和 Agent 聊聊" || label === "上次的对话") {
       await openAgentChat();
       return;
     }
-    if (apiConfig.useMocks) {
-      setNotice(`${label} 当前使用 Mock 数据`);
+    if (label === "攻略导入") {
+      setGuideOpen(true);
       return;
     }
     setDataSheet({ title: label, rows: [] });
     setDataLoading(true);
     try {
       if (label === "行程版本") {
-        const revisions = await api.trips.revisions(workspace.tripId);
-        setDataSheet({ title: label, rows: revisions.map((revision) => ({ title: `第 ${String(revision.version)} 版 · ${String(revision.action)}`, description: String(revision.summary ?? "已记录一次行程变化"), meta: String(revision.created_at ?? "") })) });
+        const revisions = await api.trips.revisions(targetWorkspace.tripId);
+        setDataSheet({ title: label, rows: revisions.map((item) => ({ title: `第 ${item.version} 版 · ${item.action}`, description: item.summary ?? `${item.resource_type} 发生变化`, meta: new Date(item.created_at).toLocaleString("zh-CN") })) });
       } else if (label === "记账与分账") {
-        const expenses = await api.expenses.list(workspace.tripId);
-        setDataSheet({ title: label, rows: expenses.map((expense) => ({ title: `${String(expense.title ?? "账单")} · ¥${String(expense.amount ?? "0")}`, description: `${String(expense.payer_nickname ?? "成员")} 付款 · ${expense.is_settled ? "已结算" : "待分摊"}`, meta: `${Array.isArray(expense.splits) ? expense.splits.length : 0} 位成员参与` })) });
-      } else if (label === "旅行高光") {
-        const highlights = await api.highlights.list(workspace.tripId);
-        setDataSheet({ title: label, rows: highlights.map((highlight) => ({ title: String(highlight.title ?? "旅行高光"), description: String(highlight.content ?? "暂无描述"), meta: String(highlight.occurred_at ?? highlight.created_at ?? "") })) });
+        const [expenses, transfers] = await Promise.all([api.expenses.list(targetWorkspace.tripId), api.expenses.settlement(targetWorkspace.tripId)]);
+        const rows: DataRow[] = expenses.map((item) => {
+          const activity = targetWorkspace.activities.find((candidate) => candidate.id === item.activity_id);
+          return { title: `${item.title} · ¥${item.amount}`, description: `${item.payer_nickname} 付款 · ${item.is_settled ? "已结算" : "待结算"}`, meta: activity ? `关联活动：${activity.title}` : "旅行公共账单" };
+        });
+        rows.push(...transfers.map((item) => ({ title: `${item.from_nickname} → ${item.to_nickname} ¥${item.amount}`, description: "系统根据未结算账单计算的建议转账" })));
+        setDataSheet({ title: label, rows });
+      } else if (label === "旅行手帐") {
+        const highlights = await api.highlights.list(targetWorkspace.tripId);
+        const rows: DataRow[] = [{ title: targetWorkspace.title, description: `${targetWorkspace.city} · ${targetWorkspace.startDate} 至 ${targetWorkspace.endDate}`, meta: `${targetWorkspace.travelerCount} 人 · ${targetWorkspace.activities.length} 项活动` }];
+        rows.push(...highlights.map((item) => {
+          const activity = targetWorkspace.activities.find((candidate) => candidate.id === item.activity_id);
+          const source = activity ? `关联活动：${activity.title}` : "旅行公共记录";
+          return { title: item.title, description: item.content ?? "暂无文字记录", meta: `${source} · ${item.images.length} 张图片 · ${new Date(item.occurred_at ?? item.created_at).toLocaleString("zh-CN")}` };
+        }));
+        setDataSheet({ title: `旅行手帐 · ${targetWorkspace.title}`, rows });
       } else if (label === "记忆簿") {
         const memories = await api.memories.list();
-        setDataSheet({ title: label, rows: memories.map((memory) => ({ title: String(memory.title ?? "未命名记忆"), description: String(memory.content ?? ""), meta: String(memory.visibility ?? "private") === "shared" ? "已授权共享" : "仅自己可见" })) });
+        setDataSheet({ title: label, rows: memories.map((item) => ({ title: item.title, description: item.content, meta: item.visibility === "shared" ? "已授权共享" : "仅自己可见" })) });
       } else if (label === "设置") {
         const settings = await api.users.settings();
-        setDataSheet({ title: label, rows: [{ title: "记忆使用", description: settings.memory_enabled ? "Agent 可以使用已授权记忆" : "Agent 不使用记忆" }, { title: "Agent 偏好", description: JSON.stringify(settings.agent_preferences ?? {}) }] });
+        setDataSheet({ title: label, rows: [{ title: "记忆使用", description: settings.memory_enabled ? "Agent 可以使用已授权记忆" : "Agent 不使用记忆" }, { title: "Agent 偏好", description: Object.keys(settings.agent_preferences).length ? JSON.stringify(settings.agent_preferences) : "尚未设置" }] });
       } else {
-        setDataSheet({ title: label, rows: [{ title: "暂未配置该数据视图", description: "后端接口已保留，前端将在对应交互确定后补充展示。" }] });
+        setDataSheet(null);
+        setNotice("该入口将在下一步界面重构中补充");
       }
     } catch (error) {
       setDataSheet(null);
@@ -398,51 +638,116 @@ function App() {
     }
   };
 
-  const currentPage = activeTab === "lobby"
-    ? <LobbyPage workspace={workspace} onSwitchTrip={() => setTripSwitcherOpen(true)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} />
-    : activeTab === "world"
-      ? <WorldPage workspace={workspace} onReplan={setReplanActivity} />
-      : activeTab === "functions"
-        ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} />
-        : <HomePage onOpen={(label) => void openFeature(label)} onPrivateChat={() => void openAgentChat()} />;
+  const handleUploadAvatar = async (file: File) => {
+    if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(file.type)) {
+      setNotice("头像仅支持 JPEG、PNG 和 WebP 图片");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setNotice("头像不能超过 5MB");
+      return;
+    }
+    setLoading(true);
+    try {
+      const user = await api.users.uploadAvatar(file);
+      setAuthUser(user);
+      if (workspace) await refreshWorkspace(workspace.tripId);
+      setNotice("头像已更新");
+    } catch (error) {
+      setNotice(`上传头像失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const inviteOptions = apiConfig.useMocks
-    ? friends.map((friend) => ({ id: friend.id, nickname: friend.name, username: friend.name, can_invite: true, description: friend.description }))
-    : inviteUsers.filter((user) => user.can_invite).map((user) => ({ ...user, description: user.username }));
+  const handleChangePassword = async (currentPassword: string, newPassword: string) => {
+    setLoading(true);
+    try {
+      await api.users.changePassword(currentPassword, newPassword);
+      api.auth.logout();
+      localStorage.removeItem("travel-agent-selected-trip");
+      setPasswordOpen(false);
+      setWorkspace(null);
+      setTrips([]);
+      setAuthUser(null);
+      setAuthOpen(true);
+      setAuthMode("login");
+      setNotice("密码已修改，请使用新密码重新登录");
+    } catch (error) {
+      setNotice(`修改密码失败：${(error as Error).message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const tripOptions: TripOption[] = apiConfig.useMocks
-    ? [{ id: workspace.tripId, title: workspace.title, city: workspace.city, startDate: workspace.startDate, endDate: workspace.endDate, status: "当前旅行" }]
-    : trips.map((trip) => ({ id: trip.id, title: trip.title, city: trip.city, startDate: trip.start_date, endDate: trip.end_date, status: trip.id === selectedTripId ? "当前旅行" : trip.status }));
+  const handleTabChange = (tab: Tab) => {
+    setActiveTab(tab);
+    if (tab === "world") setTripDetailOpen(false);
+    if (tab === "lobby") setLobbyDetailOpen(false);
+  };
+
+  const currentRequirement = requirements.find((item) => item.user_id === authUser?.id);
+  const inviteOptions = inviteUsers.filter((user) => user.can_invite).map((user) => ({ ...user, description: user.username }));
+
+  const noSelectedTrip = <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先选择行程</h1><p>前往行程列表选择或新建一场旅行。</p><button className="primary-button" onClick={() => { setActiveTab("world"); setTripDetailOpen(false); }}>查看行程列表</button></section></div>;
+  const currentPage = authUser
+    ? activeTab === "world"
+      ? tripDetailOpen && workspace
+        ? <WorldPage workspace={workspace} onBack={() => setTripDetailOpen(false)} onSettings={() => setTripSettingsOpen(true)} onReplan={setReplanActivity} onGenerate={() => setGenerateOpen(true)} onRevise={() => setReviseOpen(true)} onOpenVersions={() => void openFeature("行程版本")} onAddActivity={(day) => setActivityEditor({ day })} onEditActivity={(activity) => setActivityEditor({ activity, day: activity.day })} onDeleteActivity={(activity) => void handleDeleteActivity(activity)} onAddExpense={(activity) => setExpenseActivity(activity)} onAddRecord={(activity) => setRecordActivity(activity)} />
+        : <TripListPage trips={trips} onCreate={() => setCreateTripOpen(true)} onOpenTrip={(tripId) => void handleSelectTrip(tripId)} onOpenHistory={(tripId) => void handleOpenHistory(tripId)} />
+      : activeTab === "lobby"
+        ? lobbyDetailOpen && workspace
+          ? <LobbyPage workspace={workspace} onBack={() => setLobbyDetailOpen(false)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} onOpenRequirements={() => setRequirementsOpen(true)} />
+          : <LobbyListPage trips={trips} previews={lobbyPreviews} loading={lobbyListLoading} onOpenChat={(tripId) => void handleOpenTripChat(tripId)} onManage={(tripId) => void handleManageLobby(tripId)} />
+        : activeTab === "functions"
+          ? workspace
+            ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
+            : noSelectedTrip
+          : <HomePage user={authUser} loading={loading} onOpen={(label) => void openFeature(label)} onPrivateChat={() => void openAgentChat()} onUploadAvatar={(file) => void handleUploadAvatar(file)} onChangePassword={() => setPasswordOpen(true)} onLogout={handleLogout} />
+    : <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先登录</h1><p>登录后读取你的真实行程和协作数据。</p><button className="primary-button" onClick={() => setAuthOpen(true)}>登录或注册</button></section></div>;
 
   return (
-    <AppShell activeTab={activeTab} onTabChange={setActiveTab}>
+    <AppShell activeTab={activeTab} onTabChange={handleTabChange}>
       {currentPage}
       {loading && <div className="sync-indicator">正在同步后端…</div>}
       {notice && <div className="toast" role="status">{notice}</div>}
-      {tripSwitcherOpen && <TripSwitcherSheet trips={tripOptions} currentTripId={selectedTripId} onSelect={(tripId) => void handleSelectTrip(tripId)} onCreate={() => { setTripSwitcherOpen(false); setCreateTripOpen(true); }} onSettings={() => { setTripSwitcherOpen(false); setTripSettingsOpen(true); }} onClose={() => setTripSwitcherOpen(false)} />}
-      {tripSettingsOpen && <TripSettingsSheet tripTitle={workspace.title} isOwner={isTripOwner} archived={trips.find((trip) => trip.id === workspace.tripId)?.status === "finished"} loading={loading} onArchive={() => void handleArchiveTrip()} onDelete={() => void handleDeleteTrip()} onLeave={() => void handleLeaveTrip()} onClose={() => setTripSettingsOpen(false)} />}
-      {inviteOpen && <ModalSheet title="邀请同行者" onClose={() => setInviteOpen(false)}>
-        <div className="sheet-intro">像微信拉群一样搜索用户并邀请加入本次旅行。</div>
-        {!apiConfig.useMocks && <input className="text-input search-input" value={inviteQuery} onChange={(event) => void searchInviteUsers(event.target.value)} placeholder="搜索用户名或昵称" />}
-        <div className="friend-list">{inviteOptions.map((friend) => <button key={friend.id} className="friend-row" onClick={() => void handleInvite(friend.id)} disabled={inviteLoading}><span className="friend-avatar">{friend.nickname.slice(0, 1)}</span><span><strong>{friend.nickname}</strong><small>{friend.description}</small></span><span className="friend-action">邀请</span></button>)}</div>
-        {!apiConfig.useMocks && inviteQuery && !inviteOptions.length && <div className="empty-chat">{inviteLoading ? "搜索中…" : "没有可邀请的用户"}</div>}
-        <button className="secondary-button full-button" onClick={() => void handleCopyInvite()}>复制邀请链接</button>
-        <button className="primary-button full-button" onClick={() => setInviteOpen(false)}>完成</button>
+      {workspace && tripSettingsOpen && <TripSettingsSheet tripTitle={workspace.title} isOwner={isTripOwner} archived={workspace.status === "finished"} loading={loading} onArchive={() => void handleArchiveTrip()} onDelete={() => void handleDeleteTrip()} onLeave={() => void handleLeaveTrip()} onClose={() => setTripSettingsOpen(false)} />}
+      {workspace && inviteOpen && <ModalSheet title="邀请同行者" onClose={() => setInviteOpen(false)}>
+        <div className="sheet-intro">搜索已有用户直接添加，或复制带有效期的分享链接。</div>
+        <input className="text-input search-input" value={inviteQuery} onChange={(event) => void searchInviteUsers(event.target.value)} placeholder="搜索用户名或昵称" />
+        <div className="friend-list">{inviteOptions.map((friend) => <button key={friend.id} className="friend-row" onClick={() => void handleInvite(friend.id)} disabled={inviteLoading}><span className="friend-avatar">{friend.nickname.slice(0, 1)}</span><span><strong>{friend.nickname}</strong><small>{friend.description}</small></span><span className="friend-action">添加</span></button>)}</div>
+        {inviteQuery && !inviteOptions.length && <div className="empty-chat">{inviteLoading ? "搜索中…" : "没有可添加的用户"}</div>}
+        <button className="secondary-button full-button" onClick={() => void handleCopyInvite()}>复制分享链接</button>
       </ModalSheet>}
-      {replanActivity && <ModalSheet title="调整下午安排" onClose={() => setReplanActivity(null)} wide>
-        <div className="replan-summary"><small>当前活动</small><strong>{replanActivity.time} · {replanActivity.title}</strong><p>私聊中的个人需求只会用于生成必要的调整建议，不会直接公开隐私原因。</p></div>
-        <label className="field-label" htmlFor="replan-input">调整需求</label>
-        <textarea id="replan-input" className="text-area" defaultValue="一次尽量别走超过20分钟，保留湖边休息时间。" />
-        <div className="replan-actions"><button className="secondary-button" onClick={() => setReplanActivity(null)}>保留原计划</button><button className="primary-button" onClick={(event) => { const input = (event.currentTarget.parentElement?.previousElementSibling as HTMLTextAreaElement | null); void handleReplan(input?.value ?? ""); }} disabled={replanLoading}>{replanLoading ? "生成中…" : "生成调整建议"}</button></div>
-      </ModalSheet>}
-      {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} onApply={() => void handleApplyReplan()} onClose={() => setReplanResult(null)} />}
+      {workspace && generateOpen && <TextActionSheet title="让 Agent 生成行程" label="补充要求（可选）" placeholder="例如：不赶早、喜欢博物馆、每天步行不超过两小时" loading={replanLoading} submitText="生成并保存初始行程" onSubmit={(value) => void handleGenerate(value)} onClose={() => setGenerateOpen(false)} />}
+      {workspace && reviseOpen && <TextActionSheet title="整体调整行程" label="你希望怎样修改？" placeholder="例如：降低预算，并把第二天下午改为室内活动" loading={replanLoading} submitText="生成调整候选" onSubmit={(value) => void handleRevise(value)} onClose={() => setReviseOpen(false)} required />}
+      {replanActivity && <TextActionSheet title={`调整：${replanActivity.title}`} label="调整要求" placeholder="说明希望保留和改变的内容" loading={replanLoading} submitText="生成局部调整候选" onSubmit={(value) => void handleReplan(value)} onClose={() => setReplanActivity(null)} required />}
+      {workspace && requirementsOpen && <RequirementSheet initialContent={String(currentRequirement?.content?.notes ?? "")} initialSummary={currentRequirement?.shared_summary ?? ""} loading={loading} onSubmit={(content, summary) => void handleSaveRequirement(content, summary)} onClose={() => setRequirementsOpen(false)} />}
+      {workspace && guideOpen && <TextActionSheet title="导入攻略" label="粘贴攻略文字" placeholder="粘贴文章、笔记或推荐清单，Agent 会提取候选活动" loading={loading} submitText="提取候选活动" onSubmit={(value) => void handleImportGuide(value)} onClose={() => setGuideOpen(false)} required />}
+      {workspace && activityEditor && <ActivityEditorSheet activity={activityEditor.activity} defaultDay={activityEditor.day} defaultOrder={Math.max(0, ...workspace.activities.filter((item) => item.day === activityEditor.day).map((item) => item.order)) + 1} loading={loading} onSubmit={(values) => void handleSaveActivity(values)} onClose={() => setActivityEditor(null)} />}
+      {workspace && expenseActivity !== undefined && authUser && <ExpenseSheet activity={expenseActivity ?? undefined} members={workspace.members} currentUserId={authUser.id} loading={loading} onSubmit={(values) => void handleCreateExpense(values)} onClose={() => setExpenseActivity(undefined)} />}
+      {workspace && recordActivity !== undefined && <HighlightSheet activity={recordActivity ?? undefined} loading={loading} onSubmit={(title, content, files) => void handleCreateRecord(title, content, files)} onClose={() => setRecordActivity(undefined)} />}
+      {workspace && guideResult && <ModalSheet title="选择攻略候选" onClose={() => setGuideResult(null)} wide><div className="candidate-choice-list">{guideResult.candidates.map((candidate) => { const id = String(candidate.candidate_id ?? ""); const checked = guideResult.selected.includes(id); return <label className="candidate-choice" key={id}><input type="checkbox" checked={checked} onChange={() => setGuideResult((current) => current ? { ...current, selected: checked ? current.selected.filter((item) => item !== id) : [...current.selected, id] } : null)} /><span><strong>{String(candidate.title ?? "未命名候选")}</strong><small>{String(candidate.excerpt ?? "")}</small></span></label>; })}</div><button className="primary-button full-button" disabled={!guideResult.selected.length || loading} onClick={() => void handleApplyGuide()}>加入选中的活动</button></ModalSheet>}
+      {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} onApply={() => void handleApplyCandidate()} onClose={() => setReplanResult(null)} />}
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
-      {chatMode && <ChatSheet mode={chatMode} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat())} onClose={() => setChatMode(null)} />}
-      {authOpen && !apiConfig.useMocks && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
-      {createTripOpen && !apiConfig.useMocks && authUser && <CreateTripSheet title={hasWorkspace ? "新建旅行" : "创建第一场旅行"} closable={hasWorkspace} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
-      <footer className="build-note">{apiConfig.useMocks ? "Mock 数据模式" : `API：${apiConfig.baseUrl}`} · {formatDateRange(workspace.startDate, workspace.endDate)}</footer>
+      {chatMode && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat())} onClose={() => setChatMode(null)} />}
+      {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
+      {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
+      {createTripOpen && authUser && <CreateTripSheet title={workspace ? "新建旅行" : "创建第一场旅行"} closable={Boolean(workspace)} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
+      <footer className="build-note">API：{apiConfig.baseUrl}{workspace ? ` · 行程 v${workspace.version}` : ""}</footer>
     </AppShell>
   );
+}
+
+function TextActionSheet({ title, label, placeholder, loading, submitText, required = false, onSubmit, onClose }: { title: string; label: string; placeholder: string; loading: boolean; submitText: string; required?: boolean; onSubmit: (value: string) => void; onClose: () => void }) {
+  const [value, setValue] = useState("");
+  return <ModalSheet title={title} onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value.trim()); }}><label className="field-label">{label}<textarea className="text-area" value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} required={required} /></label><button className="primary-button full-button" disabled={loading || (required && !value.trim())}>{loading ? "处理中…" : submitText}</button></form></ModalSheet>;
+}
+
+function RequirementSheet({ initialContent, initialSummary, loading, onSubmit, onClose }: { initialContent: string; initialSummary: string; loading: boolean; onSubmit: (content: string, summary: string) => void; onClose: () => void }) {
+  const [content, setContent] = useState(initialContent);
+  const [summary, setSummary] = useState(initialSummary);
+  return <ModalSheet title="我的旅行需求" onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(content.trim(), summary.trim()); }}><p className="sheet-intro">完整需求仅你本人和代填者可见；只有下方共享摘要会展示给同行者。</p><label className="field-label">私密需求<textarea className="text-area" value={content} onChange={(event) => setContent(event.target.value)} placeholder="饮食、体力、作息及其他个人要求" required /></label><label className="field-label">共享摘要<textarea className="text-area compact-text-area" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="可选；留空代表不向同行者共享" /></label><button className="primary-button full-button" disabled={loading}>{loading ? "保存中…" : "保存需求"}</button></form></ModalSheet>;
 }
 
 export default App;

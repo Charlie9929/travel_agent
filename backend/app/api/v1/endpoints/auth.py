@@ -26,7 +26,7 @@ async def register(payload: RegisterRequest, session: DbSession) -> ApiResponse[
         await session.rollback()
         raise AppError("USERNAME_EXISTS", "用户名已存在", status_code=409) from exc
     await session.refresh(user)
-    token = create_access_token(str(user.id))
+    token = create_access_token(str(user.id), extra={"ver": user.token_version})
     return ApiResponse(data=AuthResult(token=token, user_info=UserRead.model_validate(user)))
 
 
@@ -35,7 +35,7 @@ async def login(payload: LoginRequest, session: DbSession) -> ApiResponse[AuthRe
     user = await session.scalar(select(User).where(User.username == payload.username))
     if user is None or not verify_password(payload.password, user.password_hash):
         raise AppError("INVALID_CREDENTIALS", "用户名或密码错误", status_code=401)
-    token = create_access_token(str(user.id))
+    token = create_access_token(str(user.id), extra={"ver": user.token_version})
     return ApiResponse(data=AuthResult(token=token, user_info=UserRead.model_validate(user)))
 
 

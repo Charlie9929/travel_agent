@@ -121,6 +121,7 @@ class MemoryRead(BaseModel):
 
 class HighlightCreate(BaseModel):
     title: str = Field(min_length=1, max_length=100)
+    activity_id: int | None = Field(default=None, ge=1)
     content: str | None = Field(default=None, max_length=5000)
     image_url: str | None = Field(default=None, max_length=500)
     occurred_at: datetime | None = None
@@ -128,16 +129,28 @@ class HighlightCreate(BaseModel):
 
 class HighlightUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)
+    activity_id: int | None = Field(default=None, ge=1)
     content: str | None = Field(default=None, max_length=5000)
     image_url: str | None = Field(default=None, max_length=500)
     occurred_at: datetime | None = None
 
 
-class HighlightRead(BaseModel):
+class HighlightMediaRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    file_url: str
+    mime_type: str
+    size_bytes: int
+    sort_order: int
+    created_at: datetime
+
+
+class HighlightRead(BaseModel):
+
+    id: int
     trip_id: int
+    activity_id: int | None
     created_by: int
     title: str
     content: str | None
@@ -145,6 +158,11 @@ class HighlightRead(BaseModel):
     occurred_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    images: list[HighlightMediaRead] = Field(default_factory=list)
+
+
+class HighlightImageReorder(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=3)
 
 
 class ExpenseSplitInput(BaseModel):

@@ -11,6 +11,7 @@ export function ChatSheet({
   onSend,
   onRefresh,
   onClose,
+  title,
 }: {
   mode: "lobby" | "agent";
   lobbyMessages: LobbyMessage[];
@@ -19,13 +20,14 @@ export function ChatSheet({
   onSend: (content: string) => void;
   onRefresh: () => void;
   onClose: () => void;
+  title?: string;
 }) {
   const [content, setContent] = useState("");
   const isLobby = mode === "lobby";
   const messages = isLobby ? lobbyMessages : agentMessages;
 
   return (
-    <ModalSheet title={isLobby ? "大厅讨论" : "和 Agent 私聊"} onClose={onClose} wide>
+    <ModalSheet title={title ?? (isLobby ? "大厅讨论" : "和 Agent 私聊")} onClose={onClose} wide>
       <div className="chat-toolbar"><span>{isLobby ? "同行者可见 · @Agent 可请求公开建议" : "仅你和 Agent 可见"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
       <div className="chat-list" aria-live="polite">
         {messages.length === 0 && <div className="empty-chat">还没有消息，发起第一条对话吧。</div>}

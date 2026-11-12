@@ -29,6 +29,8 @@ async def get_current_user(
     user = await session.get(User, user_id)
     if user is None:
         raise AppError("UNAUTHORIZED", "用户不存在", status_code=401)
+    if payload.get("ver") != user.token_version:
+        raise AppError("UNAUTHORIZED", "登录状态已失效，请重新登录", status_code=401)
     return user
 
 

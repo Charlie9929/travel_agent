@@ -14,11 +14,16 @@ export type Activity = {
   id: number;
   day: number;
   date: string;
+  order: number;
   time: string;
   title: string;
   type: "sight" | "food" | "hotel" | "transport" | "other";
   detail: string;
   location: string;
+  latitude: number | null;
+  longitude: number | null;
+  estimatedPrice: number | null;
+  actualPrice: number | null;
   status?: string;
   booked?: boolean;
 };
@@ -29,6 +34,7 @@ export type Workspace = {
   city: string;
   startDate: string;
   endDate: string;
+  status: "draft" | "ongoing" | "finished";
   travelerCount: number;
   version: number;
   members: Member[];
@@ -36,7 +42,7 @@ export type Workspace = {
   sharedCount: number;
   budget: string;
   activities: Activity[];
-  historyTrips: { title: string; dates: string; people: string }[];
+  historyTrips: { id: number; title: string; dates: string; people: string }[];
 };
 
 export type ReplanResult = {

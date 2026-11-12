@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     qweather_retries: int = 2
     qweather_cache_ttl_seconds: float = 600.0
 
+    upload_dir: str = "uploads"
+
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
 
 

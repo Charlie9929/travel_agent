@@ -40,6 +40,9 @@ class User(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     nickname: Mapped[str] = mapped_column(String(50), nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(255))
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
@@ -350,12 +353,42 @@ class UserMemory(TimestampMixin, Base):
 
 class TripHighlight(TimestampMixin, Base):
     __tablename__ = "trip_highlight"
-    __table_args__ = (Index("ix_trip_highlight_trip_id", "trip_id"),)
+    __table_args__ = (
+        Index("ix_trip_highlight_trip_id", "trip_id"),
+        Index("ix_trip_highlight_activity_id", "activity_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     trip_id: Mapped[int] = mapped_column(ForeignKey("trip.id", ondelete="CASCADE"), nullable=False)
+    activity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("day_activity.id", ondelete="SET NULL")
+    )
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     title: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str | None] = mapped_column(Text)
     image_url: Mapped[str | None] = mapped_column(String(500))
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TripHighlightMedia(Base):
+    __tablename__ = "trip_highlight_media"
+    __table_args__ = (
+        UniqueConstraint("highlight_id", "sort_order"),
+        CheckConstraint("size_bytes > 0 AND size_bytes <= 8388608", name="size_limit"),
+        CheckConstraint("sort_order >= 1 AND sort_order <= 3", name="sort_order_range"),
+        Index("ix_trip_highlight_media_highlight_id", "highlight_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    highlight_id: Mapped[int] = mapped_column(
+        ForeignKey("trip_highlight.id", ondelete="CASCADE"), nullable=False
+    )
+    uploaded_by: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    file_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

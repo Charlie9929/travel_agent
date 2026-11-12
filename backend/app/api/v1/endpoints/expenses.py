@@ -6,7 +6,7 @@ from sqlalchemy import delete, select
 
 from app.api.dependencies import CurrentUser, DbSession, require_trip_member
 from app.core.errors import AppError, NotFoundError
-from app.db.models import Expense, ExpenseSplit, TripMember, User
+from app.db.models import DayActivity, Expense, ExpenseSplit, TripMember, User
 from app.schemas.collaboration import (
     ExpenseCreate,
     ExpenseRead,
@@ -31,6 +31,23 @@ async def _member_users(session: DbSession, trip_id: int) -> dict[int, User]:
         )
     ).scalars()
     return {user.id: user for user in rows.all()}
+
+
+async def _validate_activity(session: DbSession, trip_id: int, activity_id: int | None) -> None:
+    if activity_id is None:
+        return
+    exists = await session.scalar(
+        select(DayActivity.id).where(
+            DayActivity.id == activity_id,
+            DayActivity.trip_id == trip_id,
+        )
+    )
+    if exists is None:
+        raise AppError(
+            "INVALID_EXPENSE_ACTIVITY",
+            "账单关联的活动不存在",
+            status_code=422,
+        )
 
 
 def _equal_splits(
@@ -201,6 +218,7 @@ async def create_expense(
     users = await _member_users(session, trip_id)
     if payload.payer_id not in users:
         raise AppError("INVALID_EXPENSE_MEMBER", "付款人必须是行程成员", status_code=422)
+    await _validate_activity(session, trip_id, payload.activity_id)
     expense = Expense(
         trip_id=trip_id,
         activity_id=payload.activity_id,
@@ -241,6 +259,8 @@ async def update_expense(
     users = await _member_users(session, trip_id)
     if payload.payer_id is not None and payload.payer_id not in users:
         raise AppError("INVALID_EXPENSE_MEMBER", "付款人必须是行程成员", status_code=422)
+    if "activity_id" in payload.model_fields_set:
+        await _validate_activity(session, trip_id, payload.activity_id)
     for field in ("title", "amount", "payer_id", "activity_id", "split_type"):
         if field in payload.model_fields_set:
             setattr(expense, field, getattr(payload, field))

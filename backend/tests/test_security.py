@@ -10,5 +10,7 @@ def test_password_hash_and_token_round_trip() -> None:
     hashed = hash_password("correct-horse-battery-staple")
     assert hashed != "correct-horse-battery-staple"
     assert verify_password("correct-horse-battery-staple", hashed)
-    token = create_access_token("42")
-    assert decode_access_token(token)["sub"] == "42"
+    token = create_access_token("42", extra={"ver": 3})
+    payload = decode_access_token(token)
+    assert payload["sub"] == "42"
+    assert payload["ver"] == 3

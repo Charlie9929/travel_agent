@@ -36,6 +36,8 @@ def test_expected_routes_are_registered() -> None:
         "/api/v1/weather": {"get"},
         "/api/v1/users/search": {"get"},
         "/api/v1/users/me/profile": {"put"},
+        "/api/v1/users/me/avatar": {"post"},
+        "/api/v1/users/me/password": {"put"},
         "/api/v1/users/me/settings": {"get", "put"},
         "/api/v1/trips/{trip_id}/messages": {"get", "post"},
         "/api/v1/trips/{trip_id}/messages/read": {"post"},
@@ -54,7 +56,10 @@ def test_expected_routes_are_registered() -> None:
         "/api/v1/trips/{trip_id}/expenses/settlement": {"get"},
         "/api/v1/trips/{trip_id}/expenses/settle": {"post"},
         "/api/v1/trips/{trip_id}/highlights": {"get", "post"},
-        "/api/v1/trips/{trip_id}/highlights/{highlight_id}": {"put"},
+        "/api/v1/trips/{trip_id}/highlights/{highlight_id}": {"put", "delete"},
+        "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images": {"post"},
+        "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images/reorder": {"put"},
+        "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images/{image_id}": {"delete"},
     }
     for path, methods in expected_methods.items():
         assert path in paths

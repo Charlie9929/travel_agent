@@ -3,9 +3,11 @@
 
 # Local credentials and environments
 **/.env
+**/.env.local
 **/.venv/
 frontend/node_modules/
 frontend/dist/
+backend/uploads/
 
 # Python caches and local tooling
 **/__pycache__/

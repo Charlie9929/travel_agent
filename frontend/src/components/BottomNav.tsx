@@ -2,10 +2,10 @@ import { Grid2x2, Home, Map, UsersRound } from "lucide-react";
 import type { Tab } from "../types";
 
 const items: { id: Tab; label: string; icon: typeof Home }[] = [
-  { id: "lobby", label: "大厅", icon: Home },
-  { id: "world", label: "旅行世界", icon: Map },
-  { id: "functions", label: "功能", icon: Grid2x2 },
-  { id: "home", label: "私人小家", icon: UsersRound },
+  { id: "world", label: "行程", icon: Map },
+  { id: "lobby", label: "协作大厅", icon: Home },
+  { id: "functions", label: "旅行工具", icon: Grid2x2 },
+  { id: "home", label: "我的", icon: UsersRound },
 ];
 
 export function BottomNav({ activeTab, onChange }: { activeTab: Tab; onChange: (tab: Tab) => void }) {
