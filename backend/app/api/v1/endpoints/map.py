@@ -1,3 +1,5 @@
+from functools import lru_cache
+
 from fastapi import APIRouter, Query
 
 from app.api.dependencies import CurrentUser
@@ -8,6 +10,7 @@ from app.schemas.common import ApiResponse
 router = APIRouter(prefix="/map", tags=["map"])
 
 
+@lru_cache
 def get_amap_client() -> AmapClient:
     settings = get_settings()
     return AmapClient(

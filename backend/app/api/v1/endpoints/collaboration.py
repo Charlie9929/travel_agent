@@ -292,6 +292,7 @@ async def send_agent_chat_message(
         status="pending",
     )
     session.add_all([user_message, pending])
+    conversation.updated_at = func.now()
     await session.commit()
     await session.refresh(user_message)
     await session.refresh(pending)

@@ -101,7 +101,28 @@ class FakeLLMClient:
     ) -> LLMResult:
         del schema, timeout_seconds, temperature
         fixture = self.fixture
-        if not self._has_custom_fixture and "重排模块" in system_prompt:
+        if not self._has_custom_fixture and "偏好理解模块" in system_prompt:
+            request_data = json.loads(user_prompt)
+            trip = request_data.get("trip") or {}
+            latest = str(request_data.get("latest_user_message") or "")
+            questions = []
+            if not trip.get("origin_city") and not any(
+                word in latest for word in ("出发", "不限", "跳过")
+            ):
+                questions.append("从哪座城市出发？如果不考虑大交通，可以回答“不限”。")
+            if trip.get("budget") is None and not any(
+                word in latest for word in ("预算", "不限", "跳过")
+            ):
+                questions.append("这次旅行的人均或总预算大约是多少？")
+            if not latest.strip():
+                questions.append("你们更喜欢轻松、美食、文化还是高强度打卡？")
+            fixture = {
+                "ready": not questions,
+                "questions": questions[:3],
+                "structured_constraints": {"notes": latest},
+                "summary": latest,
+            }
+        elif not self._has_custom_fixture and "重排模块" in system_prompt:
             request_data = json.loads(user_prompt)
             fixture = {
                 "summary": "Fake LLM 重排候选（未修改活动）",

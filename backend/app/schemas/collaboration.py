@@ -59,6 +59,7 @@ class AgentChatMessageRead(BaseModel):
     content: str
     status: str
     error_code: str | None
+    structured_data: dict[str, Any]
     created_at: datetime
 
 

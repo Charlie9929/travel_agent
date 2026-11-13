@@ -54,3 +54,28 @@ def test_trip_rules_accept_adjacent_times() -> None:
         ],
     }
     assert validate_trip_rules(itinerary)["valid"] is True
+
+
+def test_trip_rules_check_queried_opening_hours_and_price_timestamp() -> None:
+    itinerary = {
+        "meta": {"budget_total": {"amount": 500}},
+        "days": [
+            {
+                "day_index": 1,
+                "activities": [
+                    {
+                        "activity_id": "act-1",
+                        "type": "poi",
+                        "time_slot": {"start": "08:30", "end": "09:30"},
+                        "location": {"name": "博物馆"},
+                        "open_hours_hint": "09:00-17:00",
+                        "quoted_cost": {"amount": 50, "source": "amap"},
+                    }
+                ],
+            }
+        ],
+    }
+    result = validate_trip_rules(itinerary)
+    codes = {item["code"] for item in result["errors"]}
+    assert {"OUTSIDE_OPEN_HOURS", "QUOTED_PRICE_MISSING_TIMESTAMP"} <= codes
+    assert result["checks"]["opening_hours"] is False

@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.poi_enrichment import enrich_itinerary_pois
+from app.services.poi_enrichment import _pick_poi, _search_city, enrich_itinerary_pois
 
 
 class StubAmapClient:
@@ -54,3 +54,35 @@ async def test_poi_fields_are_replaced_with_amap_result() -> None:
     assert location["lng"] == 104.055
     assert enriched["city"]["adcode"] == "510105"
     assert source["city"]["adcode"] == "invented"
+
+
+def test_poi_matching_rejects_cross_city_and_unrelated_names() -> None:
+    items = [
+        {
+            "poi_id": "wrong-city",
+            "name": "逢简水乡",
+            "city": "济宁市",
+            "district": "邹城市",
+            "adcode": "370883",
+        },
+        {
+            "poi_id": "wrong-name",
+            "name": "杏坛小区东区",
+            "city": "佛山市",
+            "district": "顺德区",
+            "adcode": "440606",
+        },
+    ]
+    assert _pick_poi(items, "逢简水乡", "佛山市顺德区") is None
+
+
+def test_poi_matching_uses_foshan_scope_for_full_district_name() -> None:
+    item = {
+        "poi_id": "correct",
+        "name": "逢简水乡",
+        "city": "佛山市",
+        "district": "顺德区",
+        "adcode": "440606",
+    }
+    assert _search_city("广东省佛山市顺德区") == "佛山"
+    assert _pick_poi([item], "逢简水乡", "广东省佛山市顺德区") == item

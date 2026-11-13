@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    app_name: str = "AI 多人旅行规划助手"
+    app_name: str = "行伴 API"
     app_env: Literal["development", "test", "production"] = "development"
     debug: bool = True
     api_v1_prefix: str = "/api/v1"
@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     upload_dir: str = "uploads"
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origin_regex: str = (
+        r"^https?://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|"
+        r"192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|"
+        r"100(?:\.\d{1,3}){3})(?::\d+)?$"
+    )
 
 
 @lru_cache

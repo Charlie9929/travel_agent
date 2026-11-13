@@ -26,6 +26,11 @@ export type Activity = {
   actualPrice: number | null;
   status?: string;
   booked?: boolean;
+  openHours?: string;
+  openHoursSource?: string;
+  priceSource?: string | null;
+  priceQueriedAt?: string | null;
+  quotedPriceNote?: string;
 };
 
 export type Workspace = {
@@ -83,5 +88,6 @@ export type AgentMessage = {
   content: string;
   status: string;
   errorCode?: string | null;
+  structuredData: Record<string, unknown>;
   createdAt: string;
 };

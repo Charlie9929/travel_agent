@@ -10,6 +10,7 @@ export function ChatSheet({
   loading,
   onSend,
   onRefresh,
+  onOpenCandidate,
   onClose,
   title,
 }: {
@@ -19,6 +20,7 @@ export function ChatSheet({
   loading: boolean;
   onSend: (content: string) => void;
   onRefresh: () => void;
+  onOpenCandidate?: (message: AgentMessage) => void;
   onClose: () => void;
   title?: string;
 }) {
@@ -31,7 +33,11 @@ export function ChatSheet({
       <div className="chat-toolbar"><span>{isLobby ? "同行者可见 · @Agent 可请求公开建议" : "仅你和 Agent 可见"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
       <div className="chat-list" aria-live="polite">
         {messages.length === 0 && <div className="empty-chat">还没有消息，发起第一条对话吧。</div>}
-        {isLobby ? lobbyMessages.map((message) => <article className={`chat-bubble ${message.kind === "agent" ? "is-agent" : ""}`} key={message.id}><strong>{message.kind === "agent" ? "Agent" : message.senderNickname ?? "同行者"}</strong><p>{message.content}</p></article>) : agentMessages.map((message) => <article className={`chat-bubble ${message.role === "assistant" ? "is-agent" : "is-user"}`} key={message.id}><strong>{message.role === "assistant" ? "Agent" : "我"}</strong><p>{message.content || (message.status === "pending" ? "正在思考…" : "暂无内容")}</p></article>)}
+        {isLobby ? lobbyMessages.map((message) => <article className={`chat-bubble ${message.kind === "agent" ? "is-agent" : ""}`} key={message.id}><strong>{message.kind === "agent" ? "Agent" : message.senderNickname ?? "同行者"}</strong><p>{message.content}</p></article>) : agentMessages.map((message) => {
+          const hasCandidate = Boolean(message.structuredData.requires_confirmation && message.structuredData.ai_run_id);
+          const applied = Boolean(message.structuredData.applied);
+          return <article className={`chat-bubble ${message.role === "assistant" ? "is-agent" : "is-user"}`} key={message.id}><strong>{message.role === "assistant" ? "Agent" : "我"}</strong><p>{message.content || (message.status === "pending" ? "正在思考…" : "暂无内容")}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message)}>查看并确认调整建议</button>}{applied && message.role === "assistant" && <small className="candidate-applied">已应用到行程</small>}</article>;
+        })}
       </div>
       <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (content.trim()) { onSend(content.trim()); setContent(""); } }}>
         <input className="text-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder={isLobby ? "输入消息，@Agent 请求建议" : "告诉 Agent 你的私密需求，例如过敏信息"} disabled={loading} />

@@ -62,6 +62,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
             total_estimate += activity.price_estimated
 
     day_count = (trip.end_date - trip.start_date).days + 1
+    day_numbers = sorted(set(range(1, day_count + 1)) | set(activities_by_day))
     trip_extra = trip.extra if isinstance(trip.extra, dict) else {}
     weather_by_date = trip_extra.get("weather_by_date", {})
     days = [
@@ -74,7 +75,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
             "activities": activities_by_day.get(index, []),
             "transfers": [],
         }
-        for index in range(1, day_count + 1)
+        for index in day_numbers
     ]
     budget_amount = float(trip.total_budget or 0)
     preferences = trip.preferences if isinstance(trip.preferences, dict) else {}
@@ -163,6 +164,15 @@ def _activity_to_agent(activity: DayActivity) -> dict[str, Any]:
         item["cost"] = _money(
             float(activity.price_estimated), source=activity.price_source or "llm"
         )
+    if activity.price_real is not None:
+        item["quoted_cost"] = {
+            **_money(float(activity.price_real), source=activity.price_source or "manual"),
+            "price_type": "quoted",
+            "fetched_at": (
+                activity.price_queried_at.isoformat() if activity.price_queried_at else None
+            ),
+            "note": extra.get("quoted_price_note"),
+        }
     return item
 
 

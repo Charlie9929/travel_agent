@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "itinerary.schema.json",
-  "title": "AI 多人旅行规划助手 · 行程数据 Schema v1.0",
+  "title": "行伴 · 行程数据 Schema v1.0",
   "description": "Agent 输出的行程结构化数据契约。限定国内单个城市自由行；预留多人协同（成员/权限/修改记录）字段；价格必须区分 AI 估算与真实报价。",
   "type": "object",
   "required": ["schema_version", "trip_id", "version", "city", "meta", "days", "cost_summary"],

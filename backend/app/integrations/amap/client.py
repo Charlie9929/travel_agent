@@ -44,6 +44,13 @@ class AmapClient:
         pois = []
         for poi in body.get("pois", []):
             lng, lat = (poi.get("location") or ",").split(",", maxsplit=1)
+            biz_ext = poi.get("biz_ext") if isinstance(poi.get("biz_ext"), dict) else {}
+            business = poi.get("business") if isinstance(poi.get("business"), dict) else {}
+            raw_cost = biz_ext.get("cost") or business.get("cost")
+            try:
+                average_cost = float(raw_cost) if raw_cost not in (None, "", []) else None
+            except (TypeError, ValueError):
+                average_cost = None
             pois.append(
                 {
                     "poi_id": poi.get("id"),
@@ -52,8 +59,15 @@ class AmapClient:
                     "type": poi.get("type") or None,
                     "adcode": poi.get("adcode") or None,
                     "province": poi.get("pname") or None,
+                    "city": poi.get("cityname") or None,
+                    "district": poi.get("adname") or None,
                     "longitude": float(lng) if lng else None,
                     "latitude": float(lat) if lat else None,
+                    "open_hours": biz_ext.get("open_time")
+                    or business.get("opentime_today")
+                    or business.get("opentime_week"),
+                    "average_cost": average_cost,
+                    "telephone": poi.get("tel") or business.get("tel"),
                 }
             )
         result = {"items": pois, "provider": "amap", "queried_at": datetime.now(UTC)}
@@ -134,6 +148,7 @@ class AmapClient:
         results: dict[str, Any] = {}
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             for mode, (path, extra) in specs.items():
+                await self._wait_for_rate_slot()
                 params = {
                     "key": self.api_key,
                     "origin": origin,
@@ -149,6 +164,7 @@ class AmapClient:
 
             if city_code:
                 try:
+                    await self._wait_for_rate_slot()
                     response = await client.get(
                         f"{self.base_url}/v5/direction/transit/integrated",
                         params={

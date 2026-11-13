@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+
+from app.core.errors import AppError
+from app.integrations.amap import AmapClient
 
 
 def validate_trip_rules(
@@ -98,6 +102,34 @@ def validate_trip_rules(
                         "message": "真实报价必须带查询时间",
                     }
                 )
+            quoted_cost = activity.get("quoted_cost") or {}
+            if (
+                quoted_cost.get("amount") is not None
+                and quoted_cost.get("source") != "manual"
+                and not quoted_cost.get("fetched_at")
+            ):
+                errors.append(
+                    {
+                        "code": "QUOTED_PRICE_MISSING_TIMESTAMP",
+                        "path": f"{path}.quoted_cost.fetched_at",
+                        "message": "外部查询价格必须带查询时间",
+                    }
+                )
+            open_hours = activity.get("open_hours_hint") or (activity.get("extra") or {}).get(
+                "open_hours_hint"
+            )
+            if _valid_time(start) and isinstance(open_hours, str):
+                ranges = _opening_ranges(open_hours)
+                if ranges and not any(
+                    _time_in_range(start, item_start, item_end) for item_start, item_end in ranges
+                ):
+                    errors.append(
+                        {
+                            "code": "OUTSIDE_OPEN_HOURS",
+                            "path": f"{path}.time_slot.start",
+                            "message": f"活动开始时间 {start} 不在查询到的营业时段 {open_hours} 内",
+                        }
+                    )
         timed.sort()
         for previous, current in zip(timed, timed[1:], strict=False):
             if current[0] < previous[1]:
@@ -131,9 +163,98 @@ def validate_trip_rules(
                 item["code"] in {"UNTRUSTED_POI_ID", "QUOTED_PRICE_MISSING_TIMESTAMP"}
                 for item in errors
             ),
+            "opening_hours": not any(item["code"] == "OUTSIDE_OPEN_HOURS" for item in errors),
         },
         "cost": {"total_estimate": total_amount, "by_day": by_day_amount},
     }
+
+
+async def enrich_route_checks(
+    itinerary: dict[str, Any], *, client: AmapClient
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Query real routes, persist transfer options, and verify adjacent time gaps."""
+    data = deepcopy(itinerary)
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    city_code = (data.get("city") or {}).get("adcode")
+    for day in data.get("days", []):
+        activities = day.get("activities", [])
+        transfers: list[dict[str, Any]] = []
+        for index, (current, following) in enumerate(zip(activities, activities[1:], strict=False)):
+            origin = current.get("location") or {}
+            destination = following.get("location") or {}
+            if None in (
+                origin.get("lat"),
+                origin.get("lng"),
+                destination.get("lat"),
+                destination.get("lng"),
+            ):
+                warnings.append(
+                    {
+                        "code": "ROUTE_COORDINATE_MISSING",
+                        "path": f"days.{day.get('day_index')}.transfers.{index}",
+                        "message": "活动缺少真实坐标，无法校验交通时间",
+                    }
+                )
+                continue
+            try:
+                result = await client.routes(
+                    from_lng=float(origin["lng"]),
+                    from_lat=float(origin["lat"]),
+                    to_lng=float(destination["lng"]),
+                    to_lat=float(destination["lat"]),
+                    city_code=city_code,
+                )
+            except AppError as exc:
+                warnings.append(
+                    {
+                        "code": "ROUTE_PROVIDER_UNAVAILABLE",
+                        "path": f"days.{day.get('day_index')}.transfers.{index}",
+                        "message": f"真实路线暂时无法查询：{exc.message}",
+                    }
+                )
+                continue
+            queried_at = result.get("queried_at")
+            if isinstance(queried_at, datetime):
+                queried_at = queried_at.astimezone(UTC).isoformat()
+            options = [
+                {
+                    "mode": mode,
+                    "distance_km": round(float(route.get("distance_m", 0)) / 1000, 2),
+                    "duration_min": int(route.get("duration_min") or 0),
+                    "transit_count": route.get("transit_count"),
+                    "source": "amap",
+                    "fetched_at": queried_at,
+                }
+                for mode, route in (result.get("routes") or {}).items()
+                if route.get("available")
+            ]
+            transfers.append(
+                {
+                    "from_activity_id": current.get("activity_id"),
+                    "to_activity_id": following.get("activity_id"),
+                    "options": options,
+                }
+            )
+            durations = [item["duration_min"] for item in options if item["duration_min"] > 0]
+            current_end = (current.get("time_slot") or {}).get("end")
+            next_start = (following.get("time_slot") or {}).get("start")
+            if durations and _valid_time(current_end) and _valid_time(next_start):
+                available_gap = _minutes(next_start) - _minutes(current_end)
+                if available_gap >= 0 and min(durations) > available_gap:
+                    route_minutes = min(durations)
+                    errors.append(
+                        {
+                            "code": "ROUTE_TIME_INFEASIBLE",
+                            "path": f"days.{day.get('day_index')}.activities.{index + 1}",
+                            "message": (
+                                f"从“{current.get('title')}”到“{following.get('title')}”"
+                                f"最快约 {route_minutes} 分钟，但只预留了 {available_gap} 分钟"
+                            ),
+                        }
+                    )
+        day["transfers"] = transfers
+    return data, errors, warnings
 
 
 def _valid_time(value: Any) -> bool:
@@ -144,3 +265,28 @@ def _valid_time(value: Any) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _minutes(value: str) -> int:
+    hour, minute = value.split(":", maxsplit=1)
+    return int(hour) * 60 + int(minute)
+
+
+def _opening_ranges(value: str) -> list[tuple[str, str]]:
+    """Parse common AMap ranges such as 09:00-18:00 without guessing prose."""
+    return [
+        (f"{start_hour}:{start_minute}", f"{end_hour}:{end_minute}")
+        for start_hour, start_minute, end_hour, end_minute in re.findall(
+            r"([01]\d|2[0-3]):([0-5]\d)\s*[-~至—]\s*([01]\d|2[0-3]):([0-5]\d)",
+            value,
+        )
+    ]
+
+
+def _time_in_range(value: str, start: str, end: str) -> bool:
+    current = _minutes(value)
+    start_minute = _minutes(start)
+    end_minute = _minutes(end)
+    if end_minute >= start_minute:
+        return start_minute <= current <= end_minute
+    return current >= start_minute or current <= end_minute

@@ -1,4 +1,4 @@
-# AI 多人旅行规划助手后端
+# 行伴后端
 
 本目录是技术 2 负责的 FastAPI、PostgreSQL、多人权限、外部 API 和 Agent 工程化底座。
 

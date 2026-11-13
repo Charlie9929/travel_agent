@@ -9,6 +9,12 @@ class GenerateRequest(BaseModel):
     additional_requirements: str | None = Field(default=None, max_length=4000)
 
 
+class ClarifyPreferencesRequest(BaseModel):
+    trip_id: int
+    user_message: str | None = Field(default=None, max_length=4000)
+    conversation_summary: str | None = Field(default=None, max_length=8000)
+
+
 class ReplanRequest(BaseModel):
     trip_id: int
     day_number: int = Field(ge=1)

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -6,7 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.db.models import LobbyMessage, TravelRequirement, Trip
+from app.db.models import (
+    AgentChatMessage,
+    AgentConversation,
+    LobbyMessage,
+    TravelRequirement,
+    Trip,
+)
 from app.integrations.llm import DeepSeekClient, FakeLLMClient, LLMClient
 from app.services.itinerary_snapshot import build_itinerary_snapshot
 
@@ -27,6 +34,95 @@ def queue_system_message(
         structured_data={"event_type": event_type, **(data or {})},
     )
     session.add(message)
+    return message
+
+
+async def record_agent_workflow(
+    session: AsyncSession,
+    *,
+    trip_id: int,
+    user_id: int,
+    user_content: str,
+    assistant_content: str,
+    structured_data: dict[str, Any],
+) -> tuple[AgentChatMessage, AgentChatMessage]:
+    """Persist itinerary workflow turns in the same per-trip private Agent chat."""
+    conversation = await session.scalar(
+        select(AgentConversation).where(
+            AgentConversation.trip_id == trip_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    if conversation is None:
+        conversation = AgentConversation(trip_id=trip_id, user_id=user_id)
+        session.add(conversation)
+        await session.flush()
+    conversation.updated_at = datetime.now(UTC)
+    user_message = AgentChatMessage(
+        conversation_id=conversation.id,
+        role="user",
+        content=user_content,
+        status="succeeded",
+        structured_data={"workflow": structured_data.get("workflow"), "request": True},
+    )
+    assistant_message = AgentChatMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=assistant_content,
+        status="succeeded",
+        structured_data=structured_data,
+    )
+    session.add_all([user_message, assistant_message])
+    await session.flush()
+    return user_message, assistant_message
+
+
+async def record_agent_event(
+    session: AsyncSession,
+    *,
+    trip_id: int,
+    user_id: int,
+    content: str,
+    structured_data: dict[str, Any],
+) -> AgentChatMessage:
+    conversation = await session.scalar(
+        select(AgentConversation).where(
+            AgentConversation.trip_id == trip_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    if conversation is None:
+        conversation = AgentConversation(trip_id=trip_id, user_id=user_id)
+        session.add(conversation)
+        await session.flush()
+    conversation.updated_at = datetime.now(UTC)
+    ai_run_id = structured_data.get("ai_run_id")
+    if structured_data.get("applied") and ai_run_id is not None:
+        previous_messages = list(
+            (
+                await session.scalars(
+                    select(AgentChatMessage).where(
+                        AgentChatMessage.conversation_id == conversation.id
+                    )
+                )
+            ).all()
+        )
+        for previous in previous_messages:
+            if previous.structured_data.get("ai_run_id") == ai_run_id:
+                previous.structured_data = {
+                    **previous.structured_data,
+                    "requires_confirmation": False,
+                    "applied": True,
+                }
+    message = AgentChatMessage(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=content,
+        status="succeeded",
+        structured_data=structured_data,
+    )
+    session.add(message)
+    await session.flush()
     return message
 
 

@@ -24,6 +24,7 @@ from app.integrations.llm import DeepSeekClient, FakeLLMClient, LLMClient, LLMRe
 from app.integrations.qweather import QWeatherClient
 from app.services.itinerary_snapshot import build_itinerary_snapshot
 from app.services.poi_enrichment import enrich_itinerary_pois
+from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 from app.services.versioning import bump_trip_version
 from app.services.weather_enrichment import enrich_itinerary_weather
 
@@ -74,6 +75,7 @@ def get_llm_client() -> LLMClient:
     )
 
 
+@lru_cache
 def get_amap_client() -> AmapClient:
     settings = get_settings()
     return AmapClient(
@@ -199,9 +201,7 @@ async def generate_initial_itinerary(
         integration_warnings: list[dict] = list(pre_generation_warnings)
         if _has_locations_to_enrich(data):
             try:
-                data = await enrich_itinerary_pois(
-                    data, city=trip.city, client=amap_client
-                )
+                data = await enrich_itinerary_pois(data, city=trip.city, client=amap_client)
             except AppError as exc:
                 if not exc.code.startswith("AMAP_"):
                     raise
@@ -218,9 +218,20 @@ async def generate_initial_itinerary(
             city_code=trip.city,
             client=get_qweather_client(),
         )
+        integration_warnings.extend({**warning, "degraded": True} for warning in weather_warnings)
+        data, route_errors, route_warnings = await enrich_route_checks(data, client=amap_client)
+        integration_warnings.extend({**warning, "degraded": True} for warning in route_warnings)
         integration_warnings.extend(
-            {**warning, "degraded": True} for warning in weather_warnings
+            {**error, "degraded": True, "requires_user_review": True} for error in route_errors
         )
+        rule_result = validate_trip_rules(data)
+        if rule_result["errors"]:
+            raise AppError(
+                "AGENT_CONSTRAINT_VIOLATION",
+                "生成的行程未通过时间、预算或真实路线校验",
+                status_code=422,
+                detail=rule_result,
+            )
         data["integration_warnings"] = integration_warnings
         validate_itinerary(data)
 
@@ -280,6 +291,8 @@ async def generate_initial_itinerary(
             candidate=failed_candidate,
         )
         raise
+
+
 async def generate_replan_candidate(
     *,
     session: AsyncSession,
@@ -762,9 +775,7 @@ async def apply_ai_candidate(
     validate_itinerary(proposed)
     await _replace_activities(session, trip, proposed)
     if run.run_type == "revise":
-        _apply_changed_constraints_to_trip(
-            trip, run.input_snapshot.get("changed_constraints", {})
-        )
+        _apply_changed_constraints_to_trip(trip, run.input_snapshot.get("changed_constraints", {}))
     run.candidate_output = {
         **candidate,
         "proposed_itinerary": proposed,
@@ -976,9 +987,7 @@ def _collect_revision_days(revisions: list[TripRevision]) -> set[int] | None:
     return touched
 
 
-def _rebase_replan_candidate(
-    candidate: dict, current_itinerary: dict, target_day: int
-) -> dict:
+def _rebase_replan_candidate(candidate: dict, current_itinerary: dict, target_day: int) -> dict:
     rebased = deepcopy(current_itinerary)
     proposed = candidate["proposed_itinerary"]
     proposed_day = next(
@@ -1084,9 +1093,7 @@ def _normalize_generated_itinerary(data: dict) -> dict:
                 continue
             activity_seq += 1
             activity["activity_id"] = (
-                activity.get("activity_id")
-                or activity.get("id")
-                or f"act-{activity_seq}"
+                activity.get("activity_id") or activity.get("id") or f"act-{activity_seq}"
             )
             location = activity.get("location")
             if isinstance(location, str):
@@ -1106,9 +1113,7 @@ def _normalize_generated_itinerary(data: dict) -> dict:
                 or f"活动 {day_position}-{item_position}"
             )
             if isinstance(location, dict):
-                location["name"] = str(
-                    location.get("name") or activity["title"]
-                )
+                location["name"] = str(location.get("name") or activity["title"])
             raw_type = str(activity.get("type") or "free_time").strip().casefold()
             activity["type"] = type_aliases.get(raw_type, raw_type)
             if activity["type"] not in TYPE_MAP:
@@ -1216,11 +1221,7 @@ async def _prequery_poi_candidates(
 
 
 def _validate_initial_generation_content(data: dict) -> None:
-    empty_days = [
-        day.get("day_index")
-        for day in data.get("days", [])
-        if not day.get("activities")
-    ]
+    empty_days = [day.get("day_index") for day in data.get("days", []) if not day.get("activities")]
     if empty_days:
         raise AppError(
             "AGENT_OUTPUT_INVALID",
@@ -1316,6 +1317,7 @@ async def _replace_activities(session: AsyncSession, trip: Trip, data: dict) -> 
             duration = _duration_minutes(start, end)
             location = item.get("location") or {}
             cost = item.get("cost") or {}
+            quoted_cost = item.get("quoted_cost") or {}
             activity = existing_by_agent_id.pop(item["activity_id"], None)
             if activity is None:
                 activity = DayActivity(
@@ -1337,12 +1339,18 @@ async def _replace_activities(session: AsyncSession, trip: Trip, data: dict) -> 
             activity.latitude = location.get("lat")
             activity.longitude = location.get("lng")
             activity.price_estimated = cost.get("amount")
-            activity.price_source = cost.get("source", "llm")
+            activity.price_real = quoted_cost.get("amount")
+            activity.price_source = quoted_cost.get("source") or cost.get("source", "llm")
+            quoted_at = quoted_cost.get("fetched_at")
+            activity.price_queried_at = datetime.fromisoformat(quoted_at) if quoted_at else None
             activity.description = item.get("note")
             activity.poi_provider = location.get("poi_source")
             activity.poi_id = location.get("poi_id")
             activity.extra = {
                 "open_hours_hint": item.get("open_hours_hint"),
+                "open_hours_source": item.get("open_hours_source"),
+                "open_hours_fetched_at": item.get("open_hours_fetched_at"),
+                "quoted_price_note": quoted_cost.get("note"),
                 "status": item.get("status", "planned"),
                 "replaced_reason": item.get("replaced_reason"),
             }

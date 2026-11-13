@@ -10,6 +10,7 @@ from app.api.dependencies import (
     require_trip_member,
     require_trip_owner,
 )
+from app.api.v1.endpoints.map import get_amap_client
 from app.core.errors import ConflictError, NotFoundError
 from app.db.models import DayActivity, EditConflict, Trip, TripMember, TripRevision
 from app.schemas.activity import ActivityRead
@@ -27,7 +28,7 @@ from app.schemas.trip import (
 )
 from app.services.collaboration import present_revision_diff, queue_system_message
 from app.services.itinerary_snapshot import build_itinerary_snapshot
-from app.services.trip_validation import validate_trip_rules
+from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 
 router = APIRouter(prefix="/trips", tags=["trips"])
 
@@ -184,9 +185,16 @@ async def validate_trip(
 ) -> ApiResponse[dict]:
     await require_trip_member(session, trip_id, current_user.id)
     itinerary = await build_itinerary_snapshot(session, trip_id)
-    return ApiResponse(
-        data=validate_trip_rules(itinerary, candidate_activities=payload.candidate_activities)
+    itinerary, route_errors, route_warnings = await enrich_route_checks(
+        itinerary, client=get_amap_client()
     )
+    result = validate_trip_rules(itinerary, candidate_activities=payload.candidate_activities)
+    result["errors"].extend(route_errors)
+    result["warnings"].extend(route_warnings)
+    result["valid"] = not result["errors"]
+    result["checks"]["route_feasibility"] = not route_errors
+    result["itinerary"] = itinerary
+    return ApiResponse(data=result)
 
 
 @router.put("/{trip_id}", response_model=ApiResponse[TripRead])

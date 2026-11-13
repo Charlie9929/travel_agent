@@ -67,6 +67,7 @@ class ActivityRead(BaseModel):
     price_estimated: Decimal | None
     price_real: Decimal | None
     price_source: str | None
+    price_queried_at: datetime | None
     description: str | None
     poi_provider: str | None
     poi_id: str | None

@@ -47,6 +47,7 @@ export type ApiActivity = {
   type: Activity["type"]; start_time: string | null; duration_min: number | null; location_name: string | null;
   latitude: Money | null; longitude: Money | null; price_estimated: Money | null; price_real: Money | null;
   price_source: string | null; description: string | null; poi_provider: string | null; poi_id: string | null;
+  price_queried_at?: string | null;
   extra: JsonObject; created_at?: string; updated_at?: string;
 };
 export type ApiRequirement = {
@@ -84,6 +85,7 @@ export type ApiWeather = {
 export type ApiPoi = {
   poi_id: string | null; name: string | null; address: string | null; type: string | null; adcode: string | null;
   province: string | null; longitude: number | null; latitude: number | null;
+  open_hours?: string | null; average_cost?: number | null; telephone?: string | null;
 };
 export type ApiLobbyMessage = {
   id: number; trip_id: number; sender_id: number | null; sender_nickname: string | null; sender_avatar_url?: string | null;
@@ -92,10 +94,12 @@ export type ApiLobbyMessage = {
 export type ApiAgentConversation = { id: number; trip_id: number; user_id: number; title: string; created_at?: string; updated_at?: string };
 export type ApiAgentMessage = {
   id: number; conversation_id: number; role: "user" | "assistant"; content: string; status: string;
-  error_code: string | null; created_at: string;
+  error_code: string | null; structured_data: JsonObject; created_at: string;
 };
 
-const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000/api/v1").replace(/\/$/, "");
+const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
+const automaticBaseUrl = `${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
+const baseUrl = (configuredBaseUrl && configuredBaseUrl !== "auto" ? configuredBaseUrl : automaticBaseUrl).replace(/\/$/, "");
 
 function getToken() {
   return localStorage.getItem("travel-agent-token") || import.meta.env.VITE_ACCESS_TOKEN || "";
@@ -193,6 +197,7 @@ export const api = {
     reorder: (tripId: number, dayNumber: number, idOrder: number[], tripVersion: number) => request<JsonObject>(`/trips/${tripId}/activities/reorder`, { method: "PUT", body: JSON.stringify({ day_number: dayNumber, id_order: idOrder, trip_version: tripVersion }) }),
   },
   ai: {
+    clarifyPreferences: (tripId: number, userMessage?: string, conversationSummary?: string) => request<{ ready: boolean; questions: string[]; structured_constraints: JsonObject; summary: string }>("/ai/clarify-preferences", { method: "POST", body: JSON.stringify({ trip_id: tripId, user_message: userMessage || null, conversation_summary: conversationSummary || null }) }),
     generate: (tripId: number, additionalRequirements?: string) => request<JsonObject>("/ai/generate", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements || null }) }),
     replan: async (body: { trip_id: number; day_number: number; adjustment_requirements: string; trip_version: number; after_time?: string; trigger?: JsonObject; candidate_replacements?: JsonObject[] }) => {
       const result = await request<{ ai_run_id: number; candidate_itinerary: unknown; diff?: { ops: JsonObject[] }; summary: string; base_version: number; retry_count?: number; changed_items?: unknown[]; kept_items?: unknown[] }>("/ai/replan", { method: "POST", body: JSON.stringify(body) });
@@ -279,7 +284,7 @@ function mapUser(user: ApiUser): AuthUser {
   return { id: user.id, username: user.username, nickname: user.nickname, avatarUrl: user.avatar_url };
 }
 function mapAgentMessage(message: ApiAgentMessage): AgentMessage {
-  return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, status: message.status, errorCode: message.error_code, createdAt: message.created_at };
+  return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, status: message.status, errorCode: message.error_code, structuredData: message.structured_data ?? {}, createdAt: message.created_at };
 }
 
 export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requirements: ApiRequirement[], historyTrips: ApiTrip[] = []): Workspace {
@@ -290,6 +295,11 @@ export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requi
     latitude: activity.latitude === null ? null : Number(activity.latitude), longitude: activity.longitude === null ? null : Number(activity.longitude),
     estimatedPrice: activity.price_estimated === null ? null : Number(activity.price_estimated), actualPrice: activity.price_real === null ? null : Number(activity.price_real),
     status: typeof activity.extra?.status === "string" ? activity.extra.status : undefined, booked: Boolean(activity.price_real),
+    openHours: typeof activity.extra?.open_hours_hint === "string" ? activity.extra.open_hours_hint : undefined,
+    openHoursSource: typeof activity.extra?.open_hours_source === "string" ? activity.extra.open_hours_source : undefined,
+    priceSource: activity.price_source,
+    priceQueriedAt: activity.price_queried_at,
+    quotedPriceNote: typeof activity.extra?.quoted_price_note === "string" ? activity.extra.quoted_price_note : undefined,
   })));
   const requirementByUser = new Map(requirements.map((item) => [item.user_id, item]));
   const mappedMembers: Member[] = members.map((member) => {
