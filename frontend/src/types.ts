@@ -5,7 +5,6 @@ export type Member = {
   name: string;
   permission: "owner" | "editor" | "viewer";
   role?: string;
-  status: "已补充" | "待补充";
   proxy?: string;
   avatar: string;
   avatarPosition?: string;
@@ -25,6 +24,7 @@ export type Activity = {
   location: string;
   latitude: number | null;
   longitude: number | null;
+  poiId?: string | null;
   estimatedPrice: number | null;
   actualPrice: number | null;
   status?: string;
@@ -34,6 +34,12 @@ export type Activity = {
   priceSource?: string | null;
   priceQueriedAt?: string | null;
   quotedPriceNote?: string;
+  journeyRole?: "outbound" | "return" | "intercity_transfer" | "local_transfer";
+  transportMode?: "flight" | "high_speed_rail" | "rail" | "local_transit";
+  originCity?: string;
+  destinationCity?: string;
+  transportService?: string;
+  transportStatus?: "estimate" | "quoted" | "confirmed";
 };
 
 export type Workspace = {
@@ -81,6 +87,7 @@ export type LobbyMessage = {
   content: string;
   visibility: string;
   replyToId: number | null;
+  structuredData: Record<string, unknown>;
   createdAt: string;
 };
 

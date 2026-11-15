@@ -20,6 +20,14 @@ ACTIVITY_KEYS = {
     "cost",
     "note",
     "open_hours_hint",
+    "journey_role",
+    "transport_mode",
+    "origin_city",
+    "destination_city",
+    "transport_service",
+    "transport_status",
+    "transport_source",
+    "transport_queried_at",
 }
 LOCATION_KEYS = {"name", "poi_id"}
 COST_KEYS = {"amount"}
@@ -141,6 +149,34 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
                     )
                 )
                 activity_type = "free_time"
+            journey_role = raw_activity.get("journey_role")
+            if journey_role not in {
+                None,
+                "outbound",
+                "return",
+                "intercity_transfer",
+                "local_transfer",
+            }:
+                errors.append(
+                    _error(
+                        f"{activity_path}.journey_role",
+                        "journey_role 不合法",
+                        "INVALID_JOURNEY_ROLE",
+                    )
+                )
+                journey_role = None
+            transport_mode = raw_activity.get("transport_mode")
+            if (
+                journey_role in {"outbound", "return", "intercity_transfer"}
+                and transport_mode not in {"flight", "high_speed_rail", "rail"}
+            ):
+                errors.append(
+                    _error(
+                        f"{activity_path}.transport_mode",
+                        "大交通仅支持 flight/high_speed_rail/rail",
+                        "UNSUPPORTED_INTERCITY_MODE",
+                    )
+                )
             activity_title = raw_activity.get("title")
             if not isinstance(activity_title, str) or not activity_title.strip():
                 errors.append(
@@ -149,15 +185,16 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
                 activity_title = "未命名活动"
 
             duration = raw_activity.get("duration_minutes")
+            max_duration = 720 if journey_role in {"outbound", "return"} else 240
             if (
                 not isinstance(duration, int)
                 or isinstance(duration, bool)
-                or not 30 <= duration <= 240
+                or not 30 <= duration <= max_duration
             ):
                 errors.append(
                     _error(
                         f"{activity_path}.duration_minutes",
-                        "duration_minutes 必须是 30 到 240 的整数",
+                        f"duration_minutes 必须是 30 到 {max_duration} 的整数",
                         "INVALID_DURATION",
                     )
                 )
@@ -235,6 +272,14 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
                 {
                     "activity_id": activity_id,
                     "type": activity_type,
+                    "journey_role": journey_role,
+                    "transport_mode": transport_mode,
+                    "origin_city": raw_activity.get("origin_city"),
+                    "destination_city": raw_activity.get("destination_city"),
+                    "transport_service": raw_activity.get("transport_service"),
+                    "transport_status": raw_activity.get("transport_status"),
+                    "transport_source": raw_activity.get("transport_source"),
+                    "transport_queried_at": raw_activity.get("transport_queried_at"),
                     "title": str(activity_title),
                     "time_slot": {"start": start.strftime("%H:%M"), "end": end.strftime("%H:%M")},
                     "location": {
@@ -357,7 +402,20 @@ def _check_keys(
             )
         )
     for key in sorted(allowed - set(value)):
-        if key in {"theme", "note", "open_hours_hint", "poi_id"}:
+        if key in {
+            "theme",
+            "note",
+            "open_hours_hint",
+            "poi_id",
+            "journey_role",
+            "transport_mode",
+            "origin_city",
+            "destination_city",
+            "transport_service",
+            "transport_status",
+            "transport_source",
+            "transport_queried_at",
+        }:
             continue
         errors.append(
             _error(

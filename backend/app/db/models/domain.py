@@ -78,6 +78,8 @@ class Trip(TimestampMixin, Base):
     share_code: Mapped[str | None] = mapped_column(String(32), unique=True)
     share_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     origin_city: Mapped[str | None] = mapped_column(String(50))
+    city_adcode: Mapped[str | None] = mapped_column(String(6))
+    origin_city_adcode: Mapped[str | None] = mapped_column(String(6))
     traveler_count: Mapped[int | None] = mapped_column(Integer)
     preferences: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     constraints: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")

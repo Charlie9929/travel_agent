@@ -1,7 +1,7 @@
 import json
 import re
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from uuid import uuid4
 
@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent_contracts.business_validation import (
+    lunch_requirement_errors,
     validate_replan_candidate,
     validate_revision_candidate,
 )
@@ -23,10 +24,15 @@ from app.db.models import AiRunLog, DayActivity, Trip, TripRevision
 from app.integrations.amap import AmapClient
 from app.integrations.llm import DeepSeekClient, FakeLLMClient, LLMClient, LLMResult
 from app.integrations.qweather import QWeatherClient
+from app.services.boundary_transport import (
+    normalize_boundary_transports,
+    validate_boundary_transports,
+)
 from app.services.generation_planning import compile_generation_draft
 from app.services.itinerary_snapshot import build_itinerary_snapshot
 from app.services.poi_enrichment import enrich_itinerary_pois
 from app.services.trip_constraints import normalize_pace
+from app.services.trip_location import requires_intercity_transport
 from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 from app.services.versioning import bump_trip_version
 from app.services.weather_enrichment import enrich_itinerary_weather
@@ -51,6 +57,9 @@ REPAIR_INSTRUCTION = """
 修改后从 act-1 开始连续编号全部 activity_id。
 若包含 OPEN_HOURS_NO_FIT 或 OUTSIDE_OPEN_HOURS，必须把该活动移到营业时间内；
 可将午餐、自由活动后移，或跨天移动、替换、删除该活动，不得原样返回冲突顺序。
+若包含 MISSING_LUNCH，必须增加一项标题明确含“午餐”“午饭”或“中饭”的用餐活动；
+午餐不是可删除的低优先级活动，不限制具体用餐时间。
+仅当天确实为同一园区内的全天游玩时，才允许不单列午餐。
 """.strip()
 REALITY_REPAIR_INSTRUCTION = """
 
@@ -63,6 +72,11 @@ REALITY_REPAIR_INSTRUCTION = """
 并确保移动后仍符合日期、营业时间和行程顺序。删除或移动后重新连续编号全部 activity_id。
 若出现 OPEN_HOURS_NO_FIT 或 OUTSIDE_OPEN_HOURS，必须将受限活动提前到闭馆前完整完成；
 优先把午餐或自由活动后移，仍不可行时再跨天移动、替换或删除，禁止原样返回冲突顺序。
+午餐只能后移或替换为其他具体餐厅，不能因为时间溢出而删除；若出现 MISSING_LUNCH，
+必须补回标题明确含“午餐”“午饭”或“中饭”的用餐活动，不限制具体用餐时间。
+仅当天确实为同一园区内的全天游玩时，才允许不单列午餐。
+若出现 POI_UNAVAILABLE，必须替换或删除该活动；不得仅添加“请提前确认开放情况”等备注后保留
+暂停营业、暂停开放、临时闭园、已关闭或停业的地点。
 距离只是风险信号，不是一票否决：若远距离地点名称明确、符合用户意图且时间可达，可以保留；
 若地点含糊或候选分店明显偏离当天行程，必须从 validation_errors 中的真实高德候选选择，
 把候选的精确 name 和 poi_id 原样写入 location；也可以更换搜索关键词后让系统再次查证。
@@ -113,6 +127,7 @@ REPLAN_REPAIR_INSTRUCTION = """
 上一次重排候选未通过契约或业务校验。请根据 validation_errors 修复 invalid_output。
 必须返回完整的候选 JSON，包含 summary、diff.ops 和 proposed_day；只输出 JSON。
 只修复报错部分，不得扩大重排范围，不得更改未涉及活动的 activity_id。
+不得删除午餐导致当天跨越午餐时段却没有 meal；若出现 MISSING_LUNCH，必须补回午餐。
 """.strip()
 RAW_JSON_RETRY_INSTRUCTION = """
 
@@ -126,6 +141,10 @@ REVISION_REPAIR_INSTRUCTION = """
 上一次修订候选未通过契约或业务校验。请根据 validation_errors 修复 invalid_output。
 必须返回完整候选 JSON，包含 summary、diff.ops 和 proposed_itinerary；只输出 JSON。
 只修复报错部分，保持未修改活动的 activity_id 和内容不变。
+若错误涉及日期结构或 BOUNDARY_*：同步修正 meta 日期、每日 date/day_index，
+将原 outbound/return 活动移动到新的首日/末日并保持原 activity_id；删除重复边界交通。
+大交通仅支持 flight、high_speed_rail、rail；不得编造航班号、车次、票价或查询来源。
+不得删除午餐导致当天跨越午餐时段却没有 meal；若出现 MISSING_LUNCH，必须补回午餐。
 """.strip()
 EXPLANATION_REPAIR_INSTRUCTION = """
 
@@ -247,6 +266,12 @@ async def generate_initial_itinerary(
             try:
                 data = compile_generation_draft(planning_draft, trip)
                 validate_itinerary(data)
+                validate_boundary_transports(
+                    data,
+                    origin_city=trip.origin_city,
+                    destination_city=trip.city,
+                    require_round_trip=requires_intercity_transport(trip),
+                )
                 _validate_initial_generation_content(data)
                 break
             except AppError as exc:
@@ -311,6 +336,12 @@ async def generate_initial_itinerary(
                     failed_candidate = planning_draft
                     data = compile_generation_draft(planning_draft, trip)
                     validate_itinerary(data)
+                    validate_boundary_transports(
+                        data,
+                        origin_city=trip.origin_city,
+                        destination_city=trip.city,
+                        require_round_trip=requires_intercity_transport(trip),
+                    )
                     _validate_initial_generation_content(data)
                     continue
             if repair_errors and reality_retry_count < MAX_REALITY_REPAIR_RETRIES:
@@ -339,6 +370,12 @@ async def generate_initial_itinerary(
                 failed_candidate = planning_draft
                 data = compile_generation_draft(planning_draft, trip)
                 validate_itinerary(data)
+                validate_boundary_transports(
+                    data,
+                    origin_city=trip.origin_city,
+                    destination_city=trip.city,
+                    require_round_trip=requires_intercity_transport(trip),
+                )
                 _validate_initial_generation_content(data)
                 continue
 
@@ -363,6 +400,12 @@ async def generate_initial_itinerary(
         integration_warnings.extend({**warning, "degraded": True} for warning in weather_warnings)
         data["integration_warnings"] = integration_warnings
         validate_itinerary(data)
+        validate_boundary_transports(
+            data,
+            origin_city=trip.origin_city,
+            destination_city=trip.city,
+            require_round_trip=requires_intercity_transport(trip),
+        )
 
         new_version = await bump_trip_version(
             session,
@@ -703,9 +746,21 @@ async def generate_revision_candidate(
         )
         while True:
             candidate = _complete_replan_candidate(result.parsed_data, old_itinerary)
+            candidate = normalize_boundary_transports(
+                candidate,
+                old_itinerary=old_itinerary,
+                origin_city=trip.origin_city,
+                destination_city=trip.city,
+            )
             failed_candidate = candidate
             try:
                 validate_itinerary(candidate["proposed_itinerary"])
+                validate_boundary_transports(
+                    candidate["proposed_itinerary"],
+                    origin_city=trip.origin_city,
+                    destination_city=trip.city,
+                    require_round_trip=requires_intercity_transport(trip),
+                )
                 validate_revision_candidate(old_itinerary, candidate)
                 break
             except AppError as exc:
@@ -886,14 +941,18 @@ async def apply_ai_candidate(
             {"ai_run_id": run.id, "status": run.status, "run_type": run.run_type},
         )
     base_version = int(run.input_snapshot["base_version"])
-    if trip_version != base_version:
-        raise ConflictError(
-            "候选方案基于旧版本生成，请刷新后重新生成",
-            {"candidate_version": base_version, "submitted_version": trip_version},
-        )
     trip = await session.get(Trip, run.trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
+    if trip_version != trip.version:
+        raise ConflictError(
+            "行程版本已经变化，请刷新后重试",
+            {
+                "candidate_version": base_version,
+                "submitted_version": trip_version,
+                "current_version": trip.version,
+            },
+        )
 
     candidate = run.candidate_output
     proposed = candidate.get("proposed_itinerary")
@@ -913,17 +972,6 @@ async def apply_ai_candidate(
         validate_revision_candidate(old_itinerary, candidate)
     expected_version = base_version
     if trip.version != base_version:
-        if run.run_type == "revise":
-            await bump_trip_version(
-                session,
-                trip_id=trip.id,
-                expected_version=base_version,
-                user_id=user_id,
-                resource_type="activity",
-                resource_id=None,
-                submitted_content={"source": "ai_revise", "ai_run_id": run.id},
-            )
-            raise AssertionError("stale version must raise a conflict")
         later_revisions = list(
             (
                 await session.scalars(
@@ -934,30 +982,45 @@ async def apply_ai_candidate(
                 )
             ).all()
         )
-        touched_days = _collect_revision_days(later_revisions)
-        target_day = int(scope["day_index"])
-        if touched_days is None or target_day in touched_days:
-            await bump_trip_version(
-                session,
-                trip_id=trip.id,
-                expected_version=base_version,
-                user_id=user_id,
-                resource_type="activity",
-                resource_id=None,
-                submitted_content={"source": "ai_replan", "ai_run_id": run.id},
+        if run.run_type == "revise":
+            if _only_collaboration_revisions(later_revisions):
+                expected_version = trip.version
+            else:
+                await bump_trip_version(
+                    session,
+                    trip_id=trip.id,
+                    expected_version=base_version,
+                    user_id=user_id,
+                    resource_type="activity",
+                    resource_id=None,
+                    submitted_content={"source": "ai_revise", "ai_run_id": run.id},
+                )
+                raise AssertionError("stale version must raise a conflict")
+        else:
+            touched_days = _collect_revision_days(later_revisions)
+            target_day = int(scope["day_index"])
+            if touched_days is None or target_day in touched_days:
+                await bump_trip_version(
+                    session,
+                    trip_id=trip.id,
+                    expected_version=base_version,
+                    user_id=user_id,
+                    resource_type="activity",
+                    resource_id=None,
+                    submitted_content={"source": "ai_replan", "ai_run_id": run.id},
+                )
+                raise AssertionError("stale version must raise a conflict")
+            current_itinerary = await build_itinerary_snapshot(session, trip.id)
+            candidate = _rebase_replan_candidate(candidate, current_itinerary, target_day)
+            proposed = candidate["proposed_itinerary"]
+            validate_itinerary(proposed)
+            validate_replan_candidate(
+                current_itinerary,
+                candidate,
+                day_number=target_day,
+                after_time=scope.get("after_time"),
             )
-            raise AssertionError("stale version must raise a conflict")
-        current_itinerary = await build_itinerary_snapshot(session, trip.id)
-        candidate = _rebase_replan_candidate(candidate, current_itinerary, target_day)
-        proposed = candidate["proposed_itinerary"]
-        validate_itinerary(proposed)
-        validate_replan_candidate(
-            current_itinerary,
-            candidate,
-            day_number=target_day,
-            after_time=scope.get("after_time"),
-        )
-        expected_version = trip.version
+            expected_version = trip.version
 
     new_version = await bump_trip_version(
         session,
@@ -970,6 +1033,16 @@ async def apply_ai_candidate(
     )
     proposed["version"] = new_version
     validate_itinerary(proposed)
+    validate_boundary_transports(
+        proposed,
+        origin_city=trip.origin_city,
+        destination_city=trip.city,
+        require_round_trip=requires_intercity_transport(trip),
+    )
+    meta = proposed.get("meta") or {}
+    if run.run_type == "revise":
+        trip.start_date = date.fromisoformat(meta["date_start"])
+        trip.end_date = date.fromisoformat(meta["date_end"])
     await _replace_activities(session, trip, proposed)
     if run.run_type == "revise":
         _apply_changed_constraints_to_trip(trip, run.input_snapshot.get("changed_constraints", {}))
@@ -1234,6 +1307,19 @@ def _collect_revision_days(revisions: list[TripRevision]) -> set[int] | None:
     return touched
 
 
+def _only_collaboration_revisions(revisions: list[TripRevision]) -> bool:
+    """成员和邀请码变化不影响行程候选，可安全叠加应用。"""
+    for revision in revisions:
+        if revision.resource_type == "member":
+            continue
+        if revision.resource_type == "trip":
+            changed_fields = set((revision.diff_content or {}).keys())
+            if changed_fields and changed_fields <= {"share_code", "expires_at"}:
+                continue
+        return False
+    return True
+
+
 def _rebase_replan_candidate(candidate: dict, current_itinerary: dict, target_day: int) -> dict:
     rebased = deepcopy(current_itinerary)
     proposed = candidate["proposed_itinerary"]
@@ -1261,6 +1347,7 @@ def _complete_system_fields(data: dict, trip: Trip) -> dict:
     completed["trip_id"] = str(trip.agent_trip_id)
     completed["version"] = trip.version + 1
     completed["city"] = {**(completed.get("city") or {}), "name": trip.city}
+    completed["city"]["adcode"] = trip.city_adcode
     meta = completed.setdefault("meta", {})
     meta["date_start"] = trip.start_date.isoformat()
     meta["date_end"] = trip.end_date.isoformat()
@@ -1409,6 +1496,10 @@ def _generation_constraints(trip: Trip) -> dict:
         special_constraints = [str(special_constraints)]
     return {
         "city": trip.city,
+        "city_adcode": trip.city_adcode,
+        "origin_city": trip.origin_city,
+        "origin_city_adcode": trip.origin_city_adcode,
+        "requires_intercity_transport": requires_intercity_transport(trip),
         "date_start": trip.start_date.isoformat(),
         "date_end": trip.end_date.isoformat(),
         "traveler_count": trip.traveler_count or 1,
@@ -1473,20 +1564,22 @@ async def _prequery_poi_candidates(
 
 def _validate_initial_generation_content(data: dict) -> None:
     empty_days = [day.get("day_index") for day in data.get("days", []) if not day.get("activities")]
-    if empty_days:
+    errors = [
+        {
+            "path": f"days.{index - 1}.activities",
+            "message": "初次生成的活动列表不能为空",
+            "code": "EMPTY_GENERATED_DAY",
+        }
+        for index in empty_days
+        if isinstance(index, int)
+    ]
+    errors.extend(lunch_requirement_errors(data))
+    if errors:
         raise AppError(
             "AGENT_OUTPUT_INVALID",
-            "初次生成的每天至少需要一个活动",
+            "初次生成的每日活动或午餐安排不完整",
             status_code=502,
-            detail=[
-                {
-                    "path": f"days.{index - 1}.activities",
-                    "message": "初次生成的活动列表不能为空",
-                    "code": "EMPTY_GENERATED_DAY",
-                }
-                for index in empty_days
-                if isinstance(index, int)
-            ],
+            detail=errors,
         )
 
 
@@ -1604,6 +1697,14 @@ async def _replace_activities(session: AsyncSession, trip: Trip, data: dict) -> 
                 "quoted_price_note": quoted_cost.get("note"),
                 "status": item.get("status", "planned"),
                 "replaced_reason": item.get("replaced_reason"),
+                "journey_role": item.get("journey_role"),
+                "transport_mode": item.get("transport_mode"),
+                "origin_city": item.get("origin_city"),
+                "destination_city": item.get("destination_city"),
+                "transport_service": item.get("transport_service"),
+                "transport_status": item.get("transport_status"),
+                "transport_source": item.get("transport_source"),
+                "transport_queried_at": item.get("transport_queried_at"),
             }
 
     for obsolete in existing_by_agent_id.values():

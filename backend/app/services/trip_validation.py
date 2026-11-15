@@ -7,6 +7,7 @@ from typing import Any
 
 from app.core.errors import AppError
 from app.integrations.amap import AmapClient
+from app.services.poi_enrichment import poi_unavailable_reason
 
 
 def validate_trip_rules(
@@ -102,6 +103,21 @@ def validate_trip_rules(
                         "message": "LLM 不得直接提供可用 POI ID",
                     }
                 )
+            unavailable_reason = poi_unavailable_reason(
+                {
+                    "name": location.get("name"),
+                    "business_status": location.get("business_status"),
+                    "open_hours": activity.get("open_hours_hint"),
+                }
+            )
+            if unavailable_reason:
+                errors.append(
+                    {
+                        "code": "POI_UNAVAILABLE",
+                        "path": f"{path}.location.name",
+                        "message": f"地点已标记为“{unavailable_reason}”，不能排入行程",
+                    }
+                )
             cost = activity.get("cost") or {}
             amount = cost.get("amount")
             if isinstance(amount, (int, float)):
@@ -181,6 +197,7 @@ def validate_trip_rules(
                     "LOCATION_UNCONFIRMED",
                     "LOCATION_UNVERIFIED",
                     "UNTRUSTED_POI_ID",
+                    "POI_UNAVAILABLE",
                     "QUOTED_PRICE_MISSING_TIMESTAMP",
                 }
                 for item in errors

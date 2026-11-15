@@ -87,7 +87,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
         "version": trip.version,
         "created_at": trip.created_at.isoformat() if trip.created_at else None,
         "updated_at": trip.updated_at.isoformat() if trip.updated_at else None,
-        "city": {"name": trip.city},
+        "city": {"name": trip.city, "adcode": trip.city_adcode},
         "meta": {
             "title": trip.title,
             "date_start": trip.start_date.isoformat(),
@@ -152,6 +152,14 @@ def _activity_to_agent(activity: DayActivity) -> dict[str, Any]:
         "open_hours_hint": extra.get("open_hours_hint"),
         "status": extra.get("status", "planned"),
         "replaced_reason": extra.get("replaced_reason"),
+        "journey_role": extra.get("journey_role"),
+        "transport_mode": extra.get("transport_mode"),
+        "origin_city": extra.get("origin_city"),
+        "destination_city": extra.get("destination_city"),
+        "transport_service": extra.get("transport_service"),
+        "transport_status": extra.get("transport_status"),
+        "transport_source": extra.get("transport_source"),
+        "transport_queried_at": extra.get("transport_queried_at"),
     }
     if activity.location_name:
         item["location"] = {

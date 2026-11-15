@@ -6,6 +6,7 @@ import {
   Car,
   ChevronLeft,
   ChevronRight,
+  CircleDollarSign,
   CloudSun,
   Footprints,
   GripVertical,
@@ -49,6 +50,7 @@ type DayContext = {
   segments: Segment[];
   weather: ApiWeather | null;
   poi: ApiPoi | null;
+  activityPois: Record<number, ApiPoi>;
   loading: boolean;
   loaded: boolean;
   error: string;
@@ -68,6 +70,17 @@ const MAP_APPS: { id: MapApp; name: string; description: string }[] = [
   { id: "tencent", name: "腾讯地图", description: "使用腾讯地图导航" },
   { id: "apple", name: "Apple 地图", description: "适用于 Apple 设备" },
 ];
+
+const JOURNEY_ROLE_LABELS: Partial<Record<NonNullable<Activity["journeyRole"]>, string>> = {
+  outbound: "去程",
+  return: "返程",
+  intercity_transfer: "城市间转移",
+};
+const TRANSPORT_MODE_LABELS: Partial<Record<NonNullable<Activity["transportMode"]>, string>> = {
+  flight: "飞机",
+  high_speed_rail: "高铁",
+  rail: "普通列车",
+};
 
 function formatDay(date: string) {
   const value = new Date(`${date}T00:00:00`);
@@ -301,6 +314,17 @@ export function WorldPage({
         .sort((first, second) => first.order - second.order),
     [workspace.activities, selectedDay],
   );
+  const estimatedTripCost = useMemo(
+    () =>
+      workspace.activities.reduce(
+        (total, activity) => total + (activity.estimatedPrice ?? 0),
+        0,
+      ),
+    [workspace.activities],
+  );
+  const hasEstimatedTripCost = workspace.activities.some(
+    (activity) => activity.estimatedPrice != null,
+  );
   useEffect(() => {
     setSelectedDay(days[0]?.[0] ?? 1);
     setSelectedActivityId(null);
@@ -361,6 +385,7 @@ export function WorldPage({
       segments: pendingSegments,
       weather: null,
       poi: null,
+      activityPois: {},
       loading: Boolean(activities.length),
       loaded: !activities.length,
       error: "",
@@ -417,8 +442,7 @@ export function WorldPage({
               cityCode,
             );
             nextSegments.push({
-              from,
-              to,
+              ...pending,
               routes: (result.routes ?? {}) as Record<string, RouteChoice>,
               loading: false,
             });
@@ -443,6 +467,29 @@ export function WorldPage({
         loaded: true,
         error: errors.join("；"),
       });
+      const poiActivities = activities.filter(
+        (activity) =>
+          (activity.type === "sight" || activity.type === "food") &&
+          !activity.openHours &&
+          activity.location &&
+          activity.location !== "地点待定",
+      );
+      if (poiActivities.length) {
+        const metadataResults = await Promise.allSettled(
+          poiActivities.map((activity) => api.map.poi(workspace.city, activity.location)),
+        );
+        const activityPois: Record<number, ApiPoi> = {};
+        metadataResults.forEach((result, index) => {
+          if (result.status !== "fulfilled") return;
+          const activity = poiActivities[index];
+          const matched =
+            result.value.items.find((item) => item.poi_id === activity.poiId) ??
+            result.value.items.find((item) => item.name === activity.location) ??
+            result.value.items[0];
+          if (matched) activityPois[activity.id] = matched;
+        });
+        updateDay(day, { activityPois });
+      }
       if (routeLoadVersionRef.current === loadVersion) {
         loadedDaysRef.current.add(day);
       }
@@ -462,7 +509,31 @@ export function WorldPage({
   const poi = selectedContext?.poi ?? null;
   const externalLoading = selectedContext?.loading ?? false;
   const externalError = selectedContext?.error ?? "";
-  const dayStartSegment = segments.find((segment) => segment.isDayStart);
+  const dayStartFallback = useMemo<Segment | undefined>(() => {
+    const previousDays = days
+      .filter(([day]) => day < selectedDay)
+      .sort(([first], [second]) => second - first);
+    const previousHotel = previousDays
+      .map(([day]) =>
+        overnightHotel(
+          workspace.activities
+            .filter((activity) => activity.day === day)
+            .sort((first, second) => first.order - second.order),
+        ),
+      )
+      .find((activity): activity is Activity => Boolean(activity));
+    const first = currentDay[0];
+    if (!previousHotel || !first || sameActivityLocation(previousHotel, first)) return undefined;
+    return {
+      from: previousHotel,
+      to: first,
+      routes: {},
+      isDayStart: true,
+      loading: true,
+    };
+  }, [currentDay, days, selectedDay, workspace.activities]);
+  const dayStartSegment =
+    segments.find((segment) => segment.isDayStart) ?? dayStartFallback;
 
   const selectedActivity =
     currentDay.find((item) => item.id === selectedActivityId) ?? currentDay[0];
@@ -621,6 +692,14 @@ export function WorldPage({
               <Route size={17} />
               <span>{workspace.activities.length} 项活动</span>
             </div>
+            <div className="workbench-stat">
+              <CircleDollarSign size={17} />
+              <span>
+                {hasEstimatedTripCost
+                  ? `预计花销 ¥${estimatedTripCost.toLocaleString("zh-CN", { maximumFractionDigits: 2 })}`
+                  : "暂无预计花销"}
+              </span>
+            </div>
             <section>
               <small>同行成员</small>
               <div className="workbench-members">
@@ -744,11 +823,18 @@ export function WorldPage({
                 const priceLabel =
                   activity.actualPrice != null
                     ? activity.priceSource === "amap"
-                      ? `高德参考 ¥${activity.actualPrice}${activity.priceQueriedAt ? ` · ${formatQueryTime(activity.priceQueriedAt)}查询` : ""}`
+                      ? `${activity.type === "sight" ? "高德景点消费参考（非门票）" : "高德人均参考"} ¥${activity.actualPrice}${activity.priceQueriedAt ? ` · ${formatQueryTime(activity.priceQueriedAt)}查询` : ""}`
                       : `人工记录 ¥${activity.actualPrice}`
                     : activity.estimatedPrice != null
                       ? `AI 估算 ¥${activity.estimatedPrice}`
                       : "暂无价格";
+                const livePoi = selectedContext?.activityPois[activity.id];
+                const openHours = activity.openHours ?? livePoi?.open_hours;
+                const openHoursSource = activity.openHoursSource ?? (livePoi ? "高德" : undefined);
+                const showsAccommodationBasis =
+                  activity.type === "hotel" &&
+                  (activity.estimatedPrice ?? 0) > 0 &&
+                  /入住|办理入住|住宿/.test(activity.title);
                 return (
                   <div key={activity.id} className="activity-and-transfer">
                     <article
@@ -805,12 +891,25 @@ export function WorldPage({
                         <p>
                           <MapPin size={12} />
                           {activity.location}
+                          {activity.type === "sight" || activity.type === "food"
+                            ? openHours
+                              ? ` · 营业 ${openHours}${openHoursSource ? `（${openHoursSource}）` : ""}`
+                              : ""
+                            : ""}
                         </p>
                         <small>{priceLabel}</small>
-                        {activity.openHours && (
+                        {showsAccommodationBasis && (
                           <small className="source-note">
-                            营业参考：{activity.openHours}
-                            {activity.openHoursSource ? ` · ${activity.openHoursSource}` : ""}
+                            按 2 人/间折算
+                          </small>
+                        )}
+                        {activity.journeyRole && JOURNEY_ROLE_LABELS[activity.journeyRole] && (
+                          <small className="source-note">
+                            {JOURNEY_ROLE_LABELS[activity.journeyRole]}
+                            {activity.transportMode && TRANSPORT_MODE_LABELS[activity.transportMode]
+                              ? ` · ${TRANSPORT_MODE_LABELS[activity.transportMode]}`
+                              : ""}
+                            {activity.transportService ? ` · ${activity.transportService}` : " · 待确认班次"}
                           </small>
                         )}
                         {activity.quotedPriceNote && (

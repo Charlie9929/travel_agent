@@ -11,7 +11,7 @@ from app.api.dependencies import (
     require_trip_owner,
 )
 from app.api.v1.endpoints.map import get_amap_client
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import AppError, ConflictError, NotFoundError
 from app.db.models import DayActivity, EditConflict, Trip, TripMember, TripRevision
 from app.schemas.activity import ActivityRead
 from app.schemas.common import ApiResponse
@@ -32,6 +32,22 @@ from app.services.trip_constraints import normalize_constraints
 from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 
 router = APIRouter(prefix="/trips", tags=["trips"])
+
+
+async def _validate_city_selection(name: str, adcode: str, field: str) -> None:
+    catalog = await get_amap_client().districts()
+    valid = any(
+        city.get("name") == name and city.get("adcode") == adcode
+        for province in catalog.get("items", [])
+        for city in province.get("cities", [])
+    )
+    if not valid:
+        raise AppError(
+            "INVALID_CITY_SELECTION",
+            f"{field} 必须从省级区域—城市/地区列表中选择",
+            status_code=422,
+            detail={"field": field, "name": name, "adcode": adcode},
+        )
 
 
 @router.get("", response_model=ApiResponse[TripList])
@@ -66,6 +82,10 @@ async def list_trips(
 async def create_trip(
     payload: TripCreate, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[TripRead]:
+    await _validate_city_selection(payload.city, payload.city_adcode, "city")
+    await _validate_city_selection(
+        payload.origin_city, payload.origin_city_adcode, "origin_city"
+    )
     trip = Trip(**payload.model_dump(), creator_id=current_user.id, last_editor_id=current_user.id)
     session.add(trip)
     await session.flush()
@@ -208,6 +228,12 @@ async def update_trip(
         raise NotFoundError("行程不存在")
     before = TripRead.model_validate(current_before).model_dump(mode="json")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    if "city" in values:
+        await _validate_city_selection(values["city"], values["city_adcode"], "city")
+    if "origin_city" in values:
+        await _validate_city_selection(
+            values["origin_city"], values["origin_city_adcode"], "origin_city"
+        )
     if "constraints" in values:
         values["constraints"] = normalize_constraints(values["constraints"])
     values.update(version=Trip.version + 1, last_editor_id=current_user.id)

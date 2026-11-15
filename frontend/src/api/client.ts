@@ -31,6 +31,7 @@ export type ApiTripStatus = "draft" | "ongoing" | "finished";
 export type ApiTrip = {
   id: number; agent_trip_id?: string; title: string; city: string; start_date: string; end_date: string;
   total_budget: Money | null; creator_id?: number; traveler_count: number | null; origin_city?: string | null;
+  city_adcode?: string | null; origin_city_adcode?: string | null;
   preferences?: JsonObject; constraints?: JsonObject; version: number; status: ApiTripStatus;
   last_editor_id?: number | null; created_at?: string; updated_at?: string;
 };
@@ -87,6 +88,9 @@ export type ApiPoi = {
   province: string | null; longitude: number | null; latitude: number | null;
   open_hours?: string | null; average_cost?: number | null; telephone?: string | null;
 };
+export type ApiDistrictCity = { name: string; adcode: string };
+export type ApiDistrictProvince = { name: string; adcode: string; cities: ApiDistrictCity[] };
+type ApiDistrictResult = { items: ApiDistrictProvince[]; provider: string; queried_at: string };
 export type ApiLobbyMessage = {
   id: number; trip_id: number; sender_id: number | null; sender_nickname: string | null; sender_avatar_url?: string | null;
   kind: string; content: string; visibility: string; reply_to_id: number | null; structured_data: JsonObject; created_at: string;
@@ -132,6 +136,50 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload.data;
 }
 
+const DISTRICT_CACHE_KEY = "travel-agent-districts-v1";
+const DISTRICT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+let districtRequest: Promise<ApiDistrictResult> | null = null;
+
+function readDistrictCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(DISTRICT_CACHE_KEY) || "null") as {
+      savedAt?: number;
+      data?: ApiDistrictResult;
+    } | null;
+    if (
+      cached?.data?.items?.length &&
+      cached.savedAt &&
+      Date.now() - cached.savedAt < DISTRICT_CACHE_TTL_MS
+    ) return cached.data;
+  } catch {
+    localStorage.removeItem(DISTRICT_CACHE_KEY);
+  }
+  return null;
+}
+
+async function loadDistricts(forceRefresh = false): Promise<ApiDistrictResult> {
+  if (!forceRefresh) {
+    const cached = readDistrictCache();
+    if (cached) return cached;
+  }
+  if (!districtRequest) {
+    districtRequest = request<ApiDistrictResult>("/map/districts")
+      .then((data) => {
+        localStorage.setItem(
+          DISTRICT_CACHE_KEY,
+          JSON.stringify({ savedAt: Date.now(), data }),
+        );
+        return data;
+      })
+      .finally(() => { districtRequest = null; });
+  }
+  return districtRequest;
+}
+
+function refreshDistrictsAfterLogin() {
+  void loadDistricts(true).catch(() => undefined);
+}
+
 async function uploadFileRequest<T>(path: string, file: File) {
   const headers = new Headers({ "Content-Type": file.type });
   const token = getToken();
@@ -159,11 +207,13 @@ export const api = {
     async register(username: string, password: string, nickname: string) {
       const result = await request<{ token: string; user_info: ApiUser }>("/auth/register", { method: "POST", body: JSON.stringify({ username, password, nickname }) });
       localStorage.setItem("travel-agent-token", result.token);
+      refreshDistrictsAfterLogin();
       return { token: result.token, user: mapUser(result.user_info) };
     },
     async login(username: string, password: string) {
       const result = await request<{ token: string; user_info: ApiUser }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
       localStorage.setItem("travel-agent-token", result.token);
+      refreshDistrictsAfterLogin();
       return { token: result.token, user: mapUser(result.user_info) };
     },
     me: async () => mapUser(await request<ApiUser>("/auth/me")),
@@ -212,6 +262,7 @@ export const api = {
     applyGuideRun: (tripId: number, runId: number, tripVersion: number, selectedCandidateIds: string[]) => request<JsonObject>(`/trips/${tripId}/ai-runs/${runId}/apply`, { method: "POST", body: JSON.stringify({ trip_version: tripVersion, apply_mode: "append_selected", selected_candidate_ids: selectedCandidateIds }) }),
   },
   map: {
+    districts: () => loadDistricts(),
     poi: (city: string, keyword: string) => request<{ items: ApiPoi[]; provider: string; queried_at: string }>(`/map/poi${queryString({ city, keyword })}`),
     route: (fromLat: number, fromLng: number, toLat: number, toLng: number, cityCode?: string) => request<JsonObject>(`/map/route${queryString({ from_lat: fromLat, from_lng: fromLng, to_lat: toLat, to_lng: toLng, city_code: cityCode })}`),
   },
@@ -278,10 +329,10 @@ export const api = {
 };
 
 function mapLobbyMessage(message: ApiLobbyMessage): LobbyMessage {
-  return { id: message.id, tripId: message.trip_id, senderId: message.sender_id, senderNickname: message.sender_nickname, senderAvatarUrl: message.sender_avatar_url, kind: message.kind, content: message.content, visibility: message.visibility, replyToId: message.reply_to_id, createdAt: message.created_at };
+  return { id: message.id, tripId: message.trip_id, senderId: message.sender_id, senderNickname: message.sender_nickname, senderAvatarUrl: message.sender_avatar_url ? apiAssetUrl(message.sender_avatar_url) : null, kind: message.kind, content: message.content, visibility: message.visibility, replyToId: message.reply_to_id, structuredData: message.structured_data ?? {}, createdAt: message.created_at };
 }
 function mapUser(user: ApiUser): AuthUser {
-  return { id: user.id, username: user.username, nickname: user.nickname, avatarUrl: user.avatar_url };
+  return { id: user.id, username: user.username, nickname: user.nickname, avatarUrl: user.avatar_url ? apiAssetUrl(user.avatar_url) : null };
 }
 function mapAgentMessage(message: ApiAgentMessage): AgentMessage {
   return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, status: message.status, errorCode: message.error_code, structuredData: message.structured_data ?? {}, createdAt: message.created_at };
@@ -304,6 +355,7 @@ export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requi
     title: activity.title, type: activity.type,
     detail: activity.description ?? activity.location_name ?? "暂无活动说明", location: activity.location_name ?? "地点待定",
     latitude: activity.latitude === null ? null : Number(activity.latitude), longitude: activity.longitude === null ? null : Number(activity.longitude),
+    poiId: activity.poi_id,
     estimatedPrice: activity.price_estimated === null ? null : Number(activity.price_estimated), actualPrice: activity.price_real === null ? null : Number(activity.price_real),
     status: typeof activity.extra?.status === "string" ? activity.extra.status : undefined, booked: Boolean(activity.price_real),
     openHours: typeof activity.extra?.open_hours_hint === "string" ? activity.extra.open_hours_hint : undefined,
@@ -311,6 +363,12 @@ export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requi
     priceSource: activity.price_source,
     priceQueriedAt: activity.price_queried_at,
     quotedPriceNote: typeof activity.extra?.quoted_price_note === "string" ? activity.extra.quoted_price_note : undefined,
+    journeyRole: typeof activity.extra?.journey_role === "string" ? activity.extra.journey_role as Activity["journeyRole"] : undefined,
+    transportMode: typeof activity.extra?.transport_mode === "string" ? activity.extra.transport_mode as Activity["transportMode"] : undefined,
+    originCity: typeof activity.extra?.origin_city === "string" ? activity.extra.origin_city : undefined,
+    destinationCity: typeof activity.extra?.destination_city === "string" ? activity.extra.destination_city : undefined,
+    transportService: typeof activity.extra?.transport_service === "string" ? activity.extra.transport_service : undefined,
+    transportStatus: typeof activity.extra?.transport_status === "string" ? activity.extra.transport_status as Activity["transportStatus"] : undefined,
   })));
   const requirementByUser = new Map(requirements.map((item) => [item.user_id, item]));
   const mappedMembers: Member[] = members.map((member) => {
@@ -319,7 +377,6 @@ export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requi
       id: member.user_id, name: member.nickname || member.username || `成员 ${member.user_id}`,
       permission: member.role,
       role: member.role === "owner" ? "房主" : member.role === "editor" ? "可编辑" : "仅查看",
-      status: requirement?.status === "completed" || member.requirement_status === "completed" ? "已补充" : "待补充",
       proxy: requirement?.filled_by_nickname ? `由${requirement.filled_by_nickname}代填` : member.requirement_filled_by_nickname ? `由${member.requirement_filled_by_nickname}代填` : undefined,
       avatar: member.avatar_url ? apiAssetUrl(member.avatar_url) : requirement?.avatar_url ? apiAssetUrl(requirement.avatar_url) : "",
     };

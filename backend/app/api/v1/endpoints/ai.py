@@ -71,7 +71,8 @@ async def clarify_preferences(
             "必须返回 JSON：ready(boolean)、questions(string数组，最多3个)、"
             "structured_constraints(object)、summary(string)。"
             "城市、日期、人数是生成行程的必填信息。"
-            "预算、出发地、节奏、兴趣、饮食和行动限制均为选填；用户未主动说明时不要追问、不要臆测。"
+            "出发地和目的地已由用户在创建行程时选定，不要追问。"
+            "预算、节奏、兴趣、饮食和行动限制为选填；用户未主动说明时不要追问、不要臆测。"
             "用户明确表达节奏时，pace 只能输出 relaxed、normal 或 intense；未表达时不要输出 pace。"
         ),
         user_prompt=json.dumps(input_data, ensure_ascii=False, default=str),

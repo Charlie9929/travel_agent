@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
@@ -8,6 +10,7 @@ from app.db.models import (
     AgentConversation,
     LobbyMessage,
     LobbyReadState,
+    Trip,
     User,
 )
 from app.schemas.collaboration import (
@@ -21,7 +24,8 @@ from app.schemas.collaboration import (
     MarkLobbyReadRequest,
 )
 from app.schemas.common import ApiResponse
-from app.services.collaboration import generate_chat_reply
+from app.services.ai_service import generate_revision_candidate
+from app.services.collaboration import candidate_presentation, generate_chat_reply
 
 router = APIRouter(tags=["collaboration"])
 
@@ -118,7 +122,7 @@ async def send_lobby_message(
     created = [user_message]
     ask_agent = payload.ask_agent or "@Agent" in payload.content or "@agent" in payload.content
     if ask_agent:
-        recent = list(
+        public_history = list(
             (
                 await session.scalars(
                     select(LobbyMessage)
@@ -129,17 +133,41 @@ async def send_lobby_message(
             ).all()
         )
         try:
-            reply = await generate_chat_reply(
-                session,
+            trip = await session.get(Trip, trip_id)
+            if trip is None:
+                raise NotFoundError("行程不存在")
+            history_text = "\n".join(
+                f"[{item.kind}:{item.sender_id or 'system'}] {item.content}"
+                for item in reversed(public_history)
+            )
+            instruction = (
+                "请根据以下截至当前最近 30 条群聊公开记录，生成一版新的整体行程调整候选。"
+                "只采用群聊中明确提出且与行程有关的共识或最新要求；不得读取任何成员私聊。\n\n"
+                f"群聊记录：\n{history_text}\n\n最新触发消息：{payload.content}"
+            )
+            run, result = await generate_revision_candidate(
+                session=session,
                 trip_id=trip_id,
                 user_id=current_user.id,
-                question=payload.content,
-                mode="group",
-                recent_messages=[
-                    {"kind": item.kind, "sender_id": item.sender_id, "content": item.content}
-                    for item in reversed(recent)
-                ],
+                changed_constraints={},
+                user_instruction=instruction,
+                trip_version=trip.version,
             )
+            candidate = result.parsed_data
+            presentation = candidate_presentation(candidate)
+            structured_data = {
+                "workflow": "group_revise",
+                "ai_run_id": run.id,
+                "candidate_itinerary": candidate["proposed_itinerary"],
+                "diff": candidate["diff"],
+                "summary": candidate["summary"],
+                "base_version": trip.version,
+                "retry_count": run.retry_count,
+                "requires_confirmation": True,
+                "trigger": "explicit_mention",
+                "requested_by": current_user.id,
+                **presentation,
+            }
         except AppError as exc:
             await session.commit()
             exc.detail = {"user_message_id": user_message.id, "agent_error": exc.detail}
@@ -148,9 +176,9 @@ async def send_lobby_message(
             trip_id=trip_id,
             sender_id=None,
             kind="agent",
-            content=reply,
+            content=candidate["summary"],
             reply_to_id=user_message.id,
-            structured_data={"trigger": "explicit_mention"},
+            structured_data=structured_data,
         )
         session.add(agent_message)
         created.append(agent_message)
@@ -307,18 +335,59 @@ async def send_agent_chat_message(
         ).all()
     )
     try:
-        pending.content = await generate_chat_reply(
-            session,
-            trip_id=conversation.trip_id,
-            user_id=current_user.id,
-            question=payload.content,
-            mode="private",
-            recent_messages=[
-                {"role": item.role, "content": item.content}
+        adjustment_requested = bool(
+            re.search(
+                r"调整|修改|改成|换成|替换|删除|增加|添加|取消|重排|提前|推迟|延后|"
+                r"不要|不想|想去|保留|少安排|多安排|预算|节奏|行程|"
+                r"第[一二三四五六七八九十\d]+天",
+                payload.content,
+            )
+        )
+        if adjustment_requested:
+            trip = await session.get(Trip, conversation.trip_id)
+            if trip is None:
+                raise NotFoundError("行程不存在")
+            context = "\n".join(
+                f"{item.role}: {item.content}"
                 for item in reversed(history)
                 if item.id != pending.id
-            ],
-        )
+            )
+            run, result = await generate_revision_candidate(
+                session=session,
+                trip_id=conversation.trip_id,
+                user_id=current_user.id,
+                changed_constraints={},
+                user_instruction=(
+                    f"结合本次私聊上下文调整行程。\n{context}\n最新要求：{payload.content}"
+                ),
+                trip_version=trip.version,
+            )
+            candidate = result.parsed_data
+            pending.content = candidate["summary"]
+            pending.structured_data = {
+                "workflow": "revise",
+                "ai_run_id": run.id,
+                "candidate_itinerary": candidate["proposed_itinerary"],
+                "diff": candidate["diff"],
+                "summary": candidate["summary"],
+                "base_version": trip.version,
+                "retry_count": run.retry_count,
+                "requires_confirmation": True,
+                **candidate_presentation(candidate),
+            }
+        else:
+            pending.content = await generate_chat_reply(
+                session,
+                trip_id=conversation.trip_id,
+                user_id=current_user.id,
+                question=payload.content,
+                mode="private",
+                recent_messages=[
+                    {"role": item.role, "content": item.content}
+                    for item in reversed(history)
+                    if item.id != pending.id
+                ],
+            )
         pending.status = "succeeded"
         pending.error_code = None
     except AppError as exc:

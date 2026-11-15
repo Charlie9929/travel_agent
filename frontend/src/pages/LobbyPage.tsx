@@ -7,7 +7,7 @@ function MemberCard({ member }: { member: Member }) {
   return (
     <article className="member-card">
       <span className={`member-avatar ${member.avatar ? "" : "member-avatar-fallback"}`} style={member.avatar ? { backgroundImage: `url(${member.avatar})`, backgroundPosition: member.avatarPosition ?? "center" } : undefined} aria-hidden="true">{member.avatar ? "" : member.name.slice(0, 1)}</span>
-      <span className="member-copy"><strong>{member.name}</strong><small>{[member.role, member.status, member.proxy].filter(Boolean).join(" · ")}</small></span>
+      <span className="member-copy"><strong>{member.name}</strong><small>{[member.role, member.proxy].filter(Boolean).join(" · ")}</small></span>
     </article>
   );
 }

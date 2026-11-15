@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agent_contracts.business_validation import (
+    lunch_requirement_errors,
     validate_replan_candidate,
     validate_revision_candidate,
 )
@@ -14,6 +15,7 @@ from app.services.ai_service import (
     _collect_revision_days,
     _complete_replan_candidate,
     _normalize_generated_itinerary,
+    _only_collaboration_revisions,
     _rebase_replan_candidate,
     _repair_opening_hours_order,
     _validate_initial_generation_content,
@@ -223,6 +225,28 @@ def test_revision_days_allow_rebase_only_for_different_day() -> None:
     assert _collect_revision_days(unknown) is None  # type: ignore[arg-type]
 
 
+def test_collaboration_revisions_do_not_invalidate_itinerary_candidate() -> None:
+    collaboration_only = [
+        SimpleNamespace(resource_type="member", diff_content={"after": {"role": "editor"}}),
+        SimpleNamespace(
+            resource_type="trip",
+            diff_content={"share_code": "regenerated", "expires_at": "2026-11-18"},
+        ),
+    ]
+    assert _only_collaboration_revisions(collaboration_only)  # type: ignore[arg-type]
+
+    itinerary_changed = [
+        *collaboration_only,
+        SimpleNamespace(resource_type="activity", diff_content={"day_number": 1}),
+    ]
+    assert not _only_collaboration_revisions(itinerary_changed)  # type: ignore[arg-type]
+
+    core_trip_changed = [
+        SimpleNamespace(resource_type="trip", diff_content={"after": {"end_date": "2026-12-03"}})
+    ]
+    assert not _only_collaboration_revisions(core_trip_changed)  # type: ignore[arg-type]
+
+
 def test_replan_candidate_rebases_target_day_onto_latest_snapshot() -> None:
     current = _itinerary()
     current["days"].append(
@@ -320,3 +344,126 @@ def test_initial_generation_rejects_empty_days() -> None:
         )
     assert exc_info.value.code == "AGENT_OUTPUT_INVALID"
     assert exc_info.value.detail[0]["code"] == "EMPTY_GENERATED_DAY"
+
+
+def test_initial_generation_rejects_missing_lunch_on_midday_day() -> None:
+    with pytest.raises(AppError) as exc_info:
+        _validate_initial_generation_content(
+            {
+                "days": [
+                    {
+                        "day_index": 1,
+                        "activities": [
+                            {
+                                "type": "poi",
+                                "title": "上午参观",
+                                "time_slot": {"start": "09:00", "end": "12:00"},
+                                "location": {"name": "博物馆"},
+                            },
+                            {
+                                "type": "poi",
+                                "title": "下午游览",
+                                "time_slot": {"start": "13:30", "end": "16:00"},
+                                "location": {"name": "老街"},
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+    assert any(item["code"] == "MISSING_LUNCH" for item in exc_info.value.detail)
+
+
+def test_all_day_park_visit_may_omit_separate_lunch() -> None:
+    itinerary = {
+        "days": [
+            {
+                "day_index": 1,
+                "activities": [
+                    {
+                        "type": "poi",
+                        "title": "长隆野生动物世界全天游玩",
+                        "time_slot": {"start": "09:00", "end": "15:00"},
+                        "location": {"name": "长隆野生动物世界"},
+                    }
+                ],
+            }
+        ]
+    }
+    assert lunch_requirement_errors(itinerary) == []
+
+
+def test_regular_lunch_satisfies_midday_requirement() -> None:
+    itinerary = {
+        "days": [
+            {
+                "day_index": 1,
+                "activities": [
+                    {
+                        "type": "poi",
+                        "title": "上午参观",
+                        "time_slot": {"start": "09:00", "end": "11:30"},
+                    },
+                    {
+                        "type": "meal",
+                        "title": "午餐",
+                        "time_slot": {"start": "12:00", "end": "13:00"},
+                    },
+                    {
+                        "type": "poi",
+                        "title": "下午参观",
+                        "time_slot": {"start": "13:30", "end": "16:00"},
+                    },
+                ],
+            }
+        ]
+    }
+    assert lunch_requirement_errors(itinerary) == []
+
+
+def test_explicit_late_lunch_is_not_rejected() -> None:
+    itinerary = {
+        "days": [
+            {
+                "day_index": 1,
+                "activities": [
+                    {
+                        "type": "poi",
+                        "title": "玉龙雪山游览",
+                        "time_slot": {"start": "09:00", "end": "15:00"},
+                    },
+                    {
+                        "type": "meal",
+                        "title": "雪厨自助餐厅午餐",
+                        "time_slot": {"start": "15:30", "end": "16:30"},
+                    },
+                ],
+            }
+        ]
+    }
+    assert lunch_requirement_errors(itinerary) == []
+
+
+def test_replan_replaced_lunch_still_counts_as_current_lunch() -> None:
+    itinerary = {
+        "days": [
+            {
+                "day_index": 2,
+                "activities": [
+                    {
+                        "type": "poi",
+                        "title": "玉龙雪山游览",
+                        "status": "planned",
+                        "time_slot": {"start": "09:00", "end": "14:00"},
+                    },
+                    {
+                        "type": "meal",
+                        "title": "午餐：雪山脚下纳西风味餐厅",
+                        "status": "replaced",
+                        "time_slot": {"start": "14:30", "end": "15:30"},
+                    },
+                ],
+            }
+        ]
+    }
+    assert lunch_requirement_errors(itinerary) == []

@@ -45,6 +45,11 @@
 4. 单日时间不重叠：每个 day 内 activities 按 start 升序，前一个的 end < 后一个的 start
 5. 总 cost 必须 ≤ 新约束的 budget_total.amount（如果改了预算）
 6. 输出纯 JSON，不要文字说明、不要 markdown 代码块
+7. 用户增加或删除日期时必须同步修改 meta.date_start、meta.date_end、days.date 和 day_index，但不得自动修改用户创建的行程标题
+8. journey_role=outbound 的去程只能位于第一天第一项；journey_role=return 的返程只能位于最后一天最后一项
+9. 日期结构变化时移动原去程或返程并保持原 activity_id，不得保留旧边界交通后再新增一条同义交通
+10. 大交通仅支持 flight、high_speed_rail、rail；不处理航班取消或延误
+11. 飞机必须预留到机场、值机和安检时间；未查询真实来源时不得编造航班号、车次或精确票价
 
 # diff 粒度铁律（违反 = 被 diff_scope_validator 拒绝）
 - 每个 replace op 只改一个顶层 field。同时改 cost + time_slot 应该拆成两个 replace op。

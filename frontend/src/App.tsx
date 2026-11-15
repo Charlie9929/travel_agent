@@ -55,12 +55,6 @@ function candidateFromResponse(response: JsonObject): ReplanResult {
   };
 }
 
-function candidateFromMessage(message: AgentMessage): ReplanResult | null {
-  const data = message.structuredData as JsonObject;
-  if (!data.ai_run_id || !data.base_version) return null;
-  return candidateFromResponse(data);
-}
-
 type ConflictResolution = {
   action: string;
   submittedVersion?: number;
@@ -121,7 +115,6 @@ function App() {
   const [lobbyListLoading, setLobbyListLoading] = useState(false);
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [agentConversationId, setAgentConversationId] = useState<number | null>(null);
-  const [agentWorkflowMode, setAgentWorkflowMode] = useState<"revise" | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [replanActivity, setReplanActivity] = useState<Activity | null>(null);
   const [activityEditor, setActivityEditor] = useState<{ activity?: Activity; day: number } | null>(null);
@@ -433,10 +426,9 @@ function App() {
     if (selectedWorkspace) setLobbyDetailOpen(true);
   };
 
-  const openAgentChat = async (tripId = workspace?.tripId, workflowMode: "revise" | null = null) => {
+  const openAgentChat = async (tripId = workspace?.tripId) => {
     if (!tripId) return;
     setChatMode("agent");
-    setAgentWorkflowMode(workflowMode);
     setChatLoading(true);
     try {
       const conversation = await api.collaboration.agent.conversation(tripId);
@@ -472,17 +464,11 @@ function App() {
     setChatLoading(true);
     try {
       if (chatMode === "lobby") {
-        const created = await api.collaboration.lobby.send(workspace.tripId, content, content.includes("@Agent"));
+        const created = await api.collaboration.lobby.send(workspace.tripId, content, content.toLowerCase().includes("@agent"));
         setLobbyMessages((items) => [...items, ...created]);
       } else if (agentConversationId) {
-        if (agentWorkflowMode === "revise") {
-          const result = await api.ai.revise({ trip_id: workspace.tripId, changed_constraints: {}, user_instruction: content, trip_version: workspace.version });
-          setAgentMessages(await api.collaboration.agent.messages(agentConversationId));
-          setReplanResult(candidateFromResponse(result));
-        } else {
-          const result = await api.collaboration.agent.send(agentConversationId, content);
-          setAgentMessages((items) => [...items, result.userMessage, result.agentMessage]);
-        }
+        const result = await api.collaboration.agent.send(agentConversationId, content);
+        setAgentMessages((items) => [...items, result.userMessage, result.agentMessage]);
       }
     } catch (error) {
       setNotice(`发送失败：${(error as Error).message}`);
@@ -534,8 +520,14 @@ function App() {
     if (!workspace) return;
     try {
       const result = await api.members.createShareCode(workspace.tripId);
-      await navigator.clipboard.writeText(`${window.location.origin}/join/${result.share_code}`);
-      setNotice(`邀请链接已复制，有效期至 ${new Date(result.expires_at).toLocaleString("zh-CN")}`);
+      const inviteUrl = `${window.location.origin}/join/${result.share_code}`;
+      try {
+        await navigator.clipboard.writeText(inviteUrl);
+        setNotice(`邀请链接已复制，有效期至 ${new Date(result.expires_at).toLocaleString("zh-CN")}`);
+      } catch {
+        window.prompt("邀请链接已生成，但浏览器未允许自动复制，请手动复制：", inviteUrl);
+        setNotice(`邀请链接已生成，有效期至 ${new Date(result.expires_at).toLocaleString("zh-CN")}`);
+      }
     } catch (error) {
       setNotice(`生成邀请链接失败：${(error as Error).message}`);
     }
@@ -585,7 +577,6 @@ function App() {
     try {
       const result = await api.ai.revise({ trip_id: workspace.tripId, changed_constraints: {}, user_instruction: instruction, trip_version: workspace.version });
       setReviseOpen(false);
-      await openAgentChat(workspace.tripId, "revise");
       setReplanResult(candidateFromResponse(result));
     } catch (error) {
       setNotice(`生成整体修订失败：${(error as Error).message}`);
@@ -616,6 +607,7 @@ function App() {
       setReplanResult(null);
       await refreshWorkspace(workspace.tripId);
       if (agentConversationId) setAgentMessages(await api.collaboration.agent.messages(agentConversationId));
+      if (chatMode === "lobby") await openLobby(workspace.tripId);
       setNotice("调整已应用，行程已刷新");
     } catch (error) {
       const tripId = workspace.tripId;
@@ -966,8 +958,8 @@ function App() {
       {workspace && guideResult && <ModalSheet title="选择攻略候选" onClose={() => setGuideResult(null)} wide><div className="candidate-choice-list">{guideResult.candidates.map((candidate) => { const id = String(candidate.candidate_id ?? ""); const checked = guideResult.selected.includes(id); return <label className="candidate-choice" key={id}><input type="checkbox" checked={checked} onChange={() => setGuideResult((current) => current ? { ...current, selected: checked ? current.selected.filter((item) => item !== id) : [...current.selected, id] } : null)} /><span><strong>{String(candidate.title ?? "未命名候选")}</strong><small>{String(candidate.excerpt ?? "")}</small></span></label>; })}</div><button className="primary-button full-button" disabled={!guideResult.selected.length || loading} onClick={() => void handleApplyGuide()}>加入选中的活动</button></ModalSheet>}
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
       {journalSheet && <TravelJournalSheet workspace={journalSheet.workspace} highlights={journalSheet.highlights} loading={dataLoading} onClose={() => setJournalSheet(null)} />}
-      {chatMode && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId, agentWorkflowMode))} onOpenCandidate={(message) => { const candidate = candidateFromMessage(message); if (candidate) setReplanResult(candidate); }} onClose={() => { setChatMode(null); setAgentWorkflowMode(null); }} />}
-      {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} onApply={() => void handleApplyCandidate()} onClose={() => setReplanResult(null)} />}
+      {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
+      {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
       {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
       {createTripOpen && authUser && <CreateTripSheet title={workspace ? "新建旅行" : "创建第一场旅行"} closable={Boolean(workspace)} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}

@@ -121,29 +121,89 @@ class FakeLLMClient:
             constraints = request_data.get("constraints") or {}
             start_date = date.fromisoformat(constraints.get("date_start") or "2026-01-01")
             end_date = date.fromisoformat(constraints.get("date_end") or start_date.isoformat())
-            fixture = {
-                "city": constraints.get("city") or "成都",
-                "title": "Mock 行程",
-                "days": [
+            origin_city = constraints.get("origin_city")
+            destination_city = constraints.get("city") or "成都"
+            requires_intercity = bool(constraints.get("requires_intercity_transport"))
+            day_count = (end_date - start_date).days + 1
+            days = []
+            next_activity_id = 1
+            for offset in range(day_count):
+                activities = []
+                if requires_intercity and origin_city and offset == 0:
+                    activities.append(
+                        {
+                            "activity_id": f"act-{next_activity_id}",
+                            "type": "transport",
+                            "title": f"从{origin_city}乘高铁前往{destination_city}",
+                            "duration_minutes": 120,
+                            "location": {
+                                "name": f"{destination_city}站",
+                                "poi_id": None,
+                            },
+                            "cost": {"amount": 0},
+                            "note": "车次与票价待用户确认",
+                            "open_hours_hint": None,
+                            "journey_role": "outbound",
+                            "transport_mode": "high_speed_rail",
+                            "origin_city": origin_city,
+                            "destination_city": destination_city,
+                            "transport_service": None,
+                            "transport_status": "estimate",
+                            "transport_source": None,
+                            "transport_queried_at": None,
+                        }
+                    )
+                    next_activity_id += 1
+                activities.append(
+                    {
+                        "activity_id": f"act-{next_activity_id}",
+                        "type": "free_time",
+                        "title": "人民公园慢游",
+                        "duration_minutes": 60,
+                        "location": {"name": "人民公园", "poi_id": None},
+                        "cost": {"amount": 0},
+                        "note": None,
+                        "open_hours_hint": None,
+                    }
+                )
+                next_activity_id += 1
+                if requires_intercity and origin_city and offset == day_count - 1:
+                    activities.append(
+                        {
+                            "activity_id": f"act-{next_activity_id}",
+                            "type": "transport",
+                            "title": f"从{destination_city}乘高铁返回{origin_city}",
+                            "duration_minutes": 120,
+                            "location": {
+                                "name": f"{destination_city}站",
+                                "poi_id": None,
+                            },
+                            "cost": {"amount": 0},
+                            "note": "车次与票价待用户确认",
+                            "open_hours_hint": None,
+                            "journey_role": "return",
+                            "transport_mode": "high_speed_rail",
+                            "origin_city": destination_city,
+                            "destination_city": origin_city,
+                            "transport_service": None,
+                            "transport_status": "estimate",
+                            "transport_source": None,
+                            "transport_queried_at": None,
+                        }
+                    )
+                    next_activity_id += 1
+                days.append(
                     {
                         "date": (start_date + timedelta(days=offset)).isoformat(),
                         "day_index": offset + 1,
                         "theme": "Mock day",
-                        "activities": [
-                            {
-                                "activity_id": f"act-{offset + 1}",
-                                "type": "free_time",
-                                "title": "人民公园慢游",
-                                "duration_minutes": 60,
-                                "location": {"name": "人民公园", "poi_id": None},
-                                "cost": {"amount": 0},
-                                "note": None,
-                                "open_hours_hint": None,
-                            }
-                        ],
+                        "activities": activities,
                     }
-                    for offset in range((end_date - start_date).days + 1)
-                ],
+                )
+            fixture = {
+                "city": destination_city,
+                "title": "Mock 行程",
+                "days": days,
             }
         elif not self._has_custom_fixture and "偏好理解模块" in system_prompt:
             request_data = json.loads(user_prompt)

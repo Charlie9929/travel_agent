@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints import collaboration as collaboration_endpoint
+from app.api.v1.endpoints import trips as trips_endpoint
 from app.core.errors import AppError
 from app.db.session import engine, get_db_session
 from app.integrations.llm import FakeLLMClient
@@ -24,6 +25,17 @@ pytestmark = [
 
 
 class StubAmapClient:
+    async def districts(self) -> dict:
+        return {
+            "items": [
+                {
+                    "name": "四川省",
+                    "adcode": "510000",
+                    "cities": [{"name": "成都", "adcode": "510100"}],
+                }
+            ]
+        }
+
     async def search_poi(self, *, keyword: str, city: str) -> dict:
         return {
             "items": [
@@ -125,6 +137,7 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
         lambda: FakeLLMClient(deepcopy(itinerary_fixture)),
     )
     monkeypatch.setattr(ai_service, "get_amap_client", lambda: StubAmapClient())
+    monkeypatch.setattr(trips_endpoint, "get_amap_client", lambda: StubAmapClient())
     monkeypatch.setattr(ai_service, "get_qweather_client", lambda: StubWeatherClient())
 
     async def fake_chat_reply(*args, **kwargs) -> str:
@@ -147,6 +160,9 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
                 json={
                     "title": "端到端测试",
                     "city": "成都",
+                    "city_adcode": "510100",
+                    "origin_city": "成都",
+                    "origin_city_adcode": "510100",
                     "start_date": "2026-11-05",
                     "end_date": "2026-11-05",
                     "total_budget": 1000,
@@ -197,6 +213,9 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
                 json={
                     "title": "外部服务降级测试",
                     "city": "成都",
+                    "city_adcode": "510100",
+                    "origin_city": "成都",
+                    "origin_city_adcode": "510100",
                     "start_date": "2026-11-05",
                     "end_date": "2026-11-05",
                     "total_budget": 1000,

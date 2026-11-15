@@ -68,6 +68,9 @@ async def test_live_deepseek_amap_qweather_chain_persists_and_reloads() -> None:
                 json={
                     "title": "成都真实 API 当日行程",
                     "city": "成都",
+                    "city_adcode": "510100",
+                    "origin_city": "成都",
+                    "origin_city_adcode": "510100",
                     "start_date": today,
                     "end_date": today,
                     "total_budget": 800,

@@ -17,7 +17,7 @@ from app.schemas.activity import (
 )
 from app.schemas.common import ApiResponse
 from app.services.collaboration import queue_system_message
-from app.services.poi_enrichment import resolve_activity_poi
+from app.services.poi_enrichment import poi_unavailable_reason, resolve_activity_poi
 from app.services.versioning import bump_trip_version
 
 router = APIRouter(prefix="/trips/{trip_id}/activities", tags=["activities"])
@@ -57,6 +57,13 @@ async def _resolve_location_values(
             f"没有在{city}找到与“{location_name}”可靠匹配的地点，请填写更完整的正式名称或分店名",
             status_code=422,
         )
+    unavailable_reason = poi_unavailable_reason(poi)
+    if unavailable_reason:
+        raise AppError(
+            "POI_UNAVAILABLE",
+            f"“{poi.get('name') or location_name}”已标记为{unavailable_reason}，请更换活动地点",
+            status_code=422,
+        )
     return {
         "location_name": poi.get("name") or location_name,
         "longitude": poi["longitude"],
@@ -70,6 +77,109 @@ def _start_minutes(activity: DayActivity) -> int | None:
     if activity.start_time is None:
         return None
     return activity.start_time.hour * 60 + activity.start_time.minute
+
+
+def _recommended_route_minutes(routes: dict) -> int | None:
+    walking = routes.get("walk") or {}
+    if walking.get("available") and (walking.get("distance_m") or 10**9) <= 1600:
+        return walking.get("duration_min")
+    cycling = routes.get("bike") or {}
+    if cycling.get("available") and (cycling.get("distance_m") or 10**9) <= 6000:
+        return cycling.get("duration_min")
+    durations = [
+        route.get("duration_min")
+        for route in routes.values()
+        if route.get("available") and isinstance(route.get("duration_min"), int)
+    ]
+    return min(durations) if durations else None
+
+
+async def _cascade_activity_times(
+    *,
+    trip: Trip,
+    activity: DayActivity,
+    day_activities: list[DayActivity],
+    old_start: int | None,
+    old_duration: int | None,
+    location_changed: bool,
+) -> dict[int, dict[str, str | None]]:
+    new_start = _start_minutes(activity)
+    if new_start is None:
+        return {}
+    following = sorted(
+        (
+            item
+            for item in day_activities
+            if item.id != activity.id and item.order_index > activity.order_index
+        ),
+        key=lambda item: item.order_index,
+    )
+    if not following:
+        return {}
+    timeline_changed = old_start != new_start or old_duration != activity.duration_min
+    if not timeline_changed and not location_changed:
+        return {}
+
+    original_starts = {item.id: _start_minutes(item) for item in day_activities}
+    original_durations = {item.id: item.duration_min or 60 for item in day_activities}
+    previous_old_end = (
+        old_start + (old_duration or 60) if old_start is not None else None
+    )
+    previous_new_end = new_start + (activity.duration_min or 60)
+    changes: dict[int, dict[str, str | None]] = {}
+    for index, current in enumerate(following):
+        current_old_start = original_starts[current.id]
+        if index == 0 and location_changed:
+            route_minutes = None
+            if all(
+                value is not None
+                for value in (
+                    activity.longitude,
+                    activity.latitude,
+                    current.longitude,
+                    current.latitude,
+                )
+            ):
+                route_result = await get_amap_client().routes(
+                    from_lng=float(activity.longitude),
+                    from_lat=float(activity.latitude),
+                    to_lng=float(current.longitude),
+                    to_lat=float(current.latitude),
+                    city_code=trip.city_adcode,
+                )
+                route_minutes = _recommended_route_minutes(route_result.get("routes") or {})
+            gap = (
+                route_minutes + 15
+                if route_minutes is not None
+                else DEFAULT_ACTIVITY_GAP_MINUTES
+            )
+        elif current_old_start is not None and previous_old_end is not None:
+            gap = max(current_old_start - previous_old_end, 0)
+        else:
+            gap = DEFAULT_ACTIVITY_GAP_MINUTES
+
+        next_start = previous_new_end + gap
+        next_end = next_start + (current.duration_min or 60)
+        if next_start < 0 or next_end > 24 * 60:
+            raise AppError(
+                "DAY_SCHEDULE_OVERFLOW",
+                "修改后的后续活动超出当天时间，请缩短活动或调整顺序",
+                status_code=422,
+            )
+        before = current.start_time.strftime("%H:%M") if current.start_time else None
+        current.start_time = time(hour=next_start // 60, minute=next_start % 60)
+        changes[current.id] = {
+            "before": before,
+            "after": current.start_time.strftime("%H:%M"),
+        }
+        previous_old_start = original_starts[current.id]
+        previous_old_end = (
+            previous_old_start + original_durations[current.id]
+            if previous_old_start is not None
+            else None
+        )
+        previous_new_end = next_end
+    return changes
 
 
 def _reschedule_reordered_activities(
@@ -252,6 +362,8 @@ async def update_activity(
     if activity is None:
         raise NotFoundError("活动不存在")
     before = ActivityRead.model_validate(activity).model_dump(mode="json")
+    old_start = _start_minutes(activity)
+    old_duration = activity.duration_min
     submitted = payload.model_dump(mode="json", exclude_unset=True)
     new_version = await bump_trip_version(
         session,
@@ -267,7 +379,7 @@ async def update_activity(
         "location_name" in changes and changes["location_name"] != activity.location_name
     )
     needs_location_resolution = bool(
-        changes.get("location_name")
+        (location_changed and changes.get("location_name"))
         or (
             not location_changed
             and activity.location_name
@@ -304,6 +416,27 @@ async def update_activity(
     for field, value in changes.items():
         setattr(activity, field, value)
     await session.flush()
+    updated_day_activities = list(
+        (
+            await session.scalars(
+                select(DayActivity)
+                .where(
+                    DayActivity.trip_id == trip_id,
+                    DayActivity.day_number == activity.day_number,
+                )
+                .order_by(DayActivity.order_index)
+            )
+        ).all()
+    )
+    cascaded_times = await _cascade_activity_times(
+        trip=trip,
+        activity=activity,
+        day_activities=updated_day_activities,
+        old_start=old_start,
+        old_duration=old_duration,
+        location_changed=location_changed,
+    )
+    await session.flush()
     await session.refresh(activity)
     after = ActivityRead.model_validate(activity).model_dump(mode="json")
     session.add(
@@ -314,7 +447,11 @@ async def update_activity(
             action="update",
             resource_type="activity",
             resource_id=activity_id,
-            diff_content={"before": before, "after": after},
+            diff_content={
+                "before": before,
+                "after": after,
+                "cascaded_start_times": cascaded_times,
+            },
         )
     )
     queue_system_message(
@@ -325,7 +462,13 @@ async def update_activity(
         data={"action": "update", "activity_id": activity.id, "trip_version": new_version},
     )
     await session.commit()
-    return ApiResponse(data={"activity": after, "trip_version": new_version})
+    return ApiResponse(
+        data={
+            "activity": after,
+            "trip_version": new_version,
+            "cascaded_start_times": cascaded_times,
+        }
+    )
 
 
 @router.delete("/{activity_id:int}", response_model=ApiResponse[dict])

@@ -5,8 +5,17 @@ from app.services.poi_enrichment import (
     _pick_poi,
     _search_city,
     enrich_itinerary_pois,
+    poi_unavailable_reason,
     resolve_activity_poi,
 )
+
+
+def test_paused_or_closed_poi_is_unavailable() -> None:
+    assert poi_unavailable_reason({"name": "长隆水上乐园(暂停营业)"}) == "暂停营业"
+    assert poi_unavailable_reason({"business_status": "临时闭园"}) == "临时闭园"
+    assert poi_unavailable_reason({"open_hours": "景区暂停接待"}) == "暂停接待"
+    assert poi_unavailable_reason({"name": "某某景区（永久关闭）"}) == "永久关闭"
+    assert poi_unavailable_reason({"name": "长隆野生动物世界"}) is None
 
 
 class StubAmapClient:

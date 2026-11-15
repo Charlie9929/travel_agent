@@ -285,6 +285,35 @@
         "type": {
           "enum": ["poi", "meal", "hotel", "transport", "free_time"]
         },
+        "journey_role": {
+          "enum": ["outbound", "return", "intercity_transfer", "local_transfer", null],
+          "description": "交通语义：行程去程、返程、城市间转移或目的地内部交通；非交通活动为 null"
+        },
+        "transport_mode": {
+          "enum": ["flight", "high_speed_rail", "rail", "local_transit", null],
+          "description": "当前大交通仅支持飞机、高铁和普通铁路"
+        },
+        "origin_city": {
+          "type": ["string", "null"]
+        },
+        "destination_city": {
+          "type": ["string", "null"]
+        },
+        "transport_service": {
+          "type": ["string", "null"],
+          "description": "经真实来源确认的航班号或车次；无法查证时必须为 null"
+        },
+        "transport_status": {
+          "enum": ["estimate", "quoted", "confirmed", null],
+          "description": "estimate 表示 AI 建议且待用户确认"
+        },
+        "transport_source": {
+          "type": ["string", "null"]
+        },
+        "transport_queried_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
         "title": { "type": "string" },
         "time_slot": { "$ref": "#/$defs/time_slot" },
         "location": { "$ref": "#/$defs/location" },

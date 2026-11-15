@@ -7,6 +7,19 @@ from typing import Any
 
 from app.integrations.amap import AmapClient
 
+CLOSED_POI_RE = re.compile(
+    r"暂停营业|暂停开放|暂停接待|暂停参观|暂停入园|临时闭园|暂时闭园|"
+    r"临时关闭|永久关闭|已关闭|停止营业|停业|歇业|闭馆|闭店"
+)
+
+
+def poi_unavailable_reason(poi: dict[str, Any]) -> str | None:
+    evidence = " ".join(
+        str(poi.get(key) or "") for key in ("name", "business_status", "open_hours")
+    )
+    match = CLOSED_POI_RE.search(evidence)
+    return match.group(0) if match else None
+
 
 async def resolve_activity_poi(
     *,
@@ -103,6 +116,23 @@ async def enrich_itinerary_pois(
                         "candidates": _candidate_evidence(
                             result.get("items", []),
                             anchors=day_anchors or trip_anchors,
+                        ),
+                    }
+                )
+                continue
+
+            unavailable_reason = poi_unavailable_reason(poi)
+            if unavailable_reason:
+                resolution_issues.append(
+                    {
+                        "code": "POI_UNAVAILABLE",
+                        "activity_id": activity.get("activity_id"),
+                        "title": activity.get("title"),
+                        "query": keyword,
+                        "matched_name": poi.get("name"),
+                        "message": (
+                            f"高德地点标记为“{unavailable_reason}”，"
+                            "必须替换为正常营业的地点"
                         ),
                     }
                 )

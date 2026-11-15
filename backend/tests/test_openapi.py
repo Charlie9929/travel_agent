@@ -60,6 +60,7 @@ def test_expected_routes_are_registered() -> None:
         "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images": {"post"},
         "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images/reorder": {"put"},
         "/api/v1/trips/{trip_id}/highlights/{highlight_id}/images/{image_id}": {"delete"},
+        "/api/v1/map/districts": {"get"},
     }
     for path, methods in expected_methods.items():
         assert path in paths

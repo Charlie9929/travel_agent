@@ -28,6 +28,7 @@ class AmapClient:
         self._last_request_at = 0.0
         self._rate_lock = asyncio.Lock()
         self._poi_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._district_cache: dict[str, Any] | None = None
 
     def _require_key(self) -> None:
         if not self.api_key:
@@ -66,12 +67,90 @@ class AmapClient:
                     "open_hours": biz_ext.get("open_time")
                     or business.get("opentime_today")
                     or business.get("opentime_week"),
+                    "business_status": business.get("business_status")
+                    or biz_ext.get("business_status")
+                    or poi.get("business_status"),
                     "average_cost": average_cost,
                     "telephone": poi.get("tel") or business.get("tel"),
                 }
             )
         result = {"items": pois, "provider": "amap", "queried_at": datetime.now(UTC)}
         self._poi_cache[cache_key] = result
+        return result
+
+    async def districts(self) -> dict[str, Any]:
+        """Return province -> city/region options with canonical AMap adcodes."""
+        self._require_key()
+        if self._district_cache is not None:
+            return self._district_cache
+        await self._wait_for_rate_slot()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.get(
+                    f"{self.base_url}/v3/config/district",
+                    params={
+                        "key": self.api_key,
+                        "keywords": "中国",
+                        "subdistrict": 2,
+                        "extensions": "base",
+                        "output": "JSON",
+                    },
+                )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise AppError("AMAP_TIMEOUT", "行政区划查询超时", status_code=502) from exc
+        except httpx.HTTPError as exc:
+            raise AppError("AMAP_UNAVAILABLE", "行政区划服务不可用", status_code=502) from exc
+        body = response.json()
+        if body.get("status") != "1":
+            raise AppError(
+                "AMAP_ERROR",
+                body.get("info", "行政区划查询失败"),
+                status_code=502,
+                detail={"infocode": body.get("infocode")},
+            )
+        result = {
+            "items": self._normalize_district_tree(body),
+            "provider": "amap",
+            "queried_at": datetime.now(UTC),
+        }
+        self._district_cache = result
+        return result
+
+    @staticmethod
+    def _normalize_district_tree(body: dict[str, Any]) -> list[dict[str, Any]]:
+        countries = body.get("districts") or []
+        provinces = countries[0].get("districts") or [] if countries else []
+        result: list[dict[str, Any]] = []
+        for province in provinces:
+            province_name = str(province.get("name") or "").strip()
+            province_adcode = str(province.get("adcode") or "").strip()
+            if not province_name or len(province_adcode) != 6:
+                continue
+            children = province.get("districts") or []
+            cities = [
+                {
+                    "name": str(city.get("name") or "").strip(),
+                    "adcode": str(city.get("adcode") or "").strip(),
+                }
+                for city in children
+                if city.get("level") == "city"
+                and str(city.get("name") or "").strip()
+                and len(str(city.get("adcode") or "").strip()) == 6
+            ]
+            # Municipalities, Hong Kong, Macao and Taiwan may have districts
+            # directly below the province level. They are one selectable region.
+            if not cities:
+                cities = [{"name": province_name, "adcode": province_adcode}]
+            cities.sort(key=lambda item: item["adcode"])
+            result.append(
+                {
+                    "name": province_name,
+                    "adcode": province_adcode,
+                    "cities": cities,
+                }
+            )
+        result.sort(key=lambda item: item["adcode"])
         return result
 
     async def _search_poi_with_retry(

@@ -32,6 +32,12 @@ async def search_poi(
     return ApiResponse(data=await get_amap_client().search_poi(keyword=keyword, city=city))
 
 
+@router.get("/districts", response_model=ApiResponse[dict])
+async def districts(current_user: CurrentUser) -> ApiResponse[dict]:
+    del current_user
+    return ApiResponse(data=await get_amap_client().districts())
+
+
 @router.get("/route", response_model=ApiResponse[dict])
 async def route(
     current_user: CurrentUser,
