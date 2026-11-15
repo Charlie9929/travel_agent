@@ -28,6 +28,7 @@ from app.schemas.trip import (
 )
 from app.services.collaboration import present_revision_diff, queue_system_message
 from app.services.itinerary_snapshot import build_itinerary_snapshot
+from app.services.trip_constraints import normalize_constraints
 from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -207,6 +208,8 @@ async def update_trip(
         raise NotFoundError("行程不存在")
     before = TripRead.model_validate(current_before).model_dump(mode="json")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
+    if "constraints" in values:
+        values["constraints"] = normalize_constraints(values["constraints"])
     values.update(version=Trip.version + 1, last_editor_id=current_user.id)
     result = await session.execute(
         update(Trip)

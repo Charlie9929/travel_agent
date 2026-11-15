@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError
 from app.db.models import DayActivity, Trip, TripMember, TripRevision, User
+from app.services.trip_constraints import normalize_pace
 
 AGENT_TYPE_BY_DB_TYPE = {
     "sight": "poi",
@@ -81,7 +82,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
     preferences = trip.preferences if isinstance(trip.preferences, dict) else {}
     constraints = trip.constraints if isinstance(trip.constraints, dict) else {}
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "trip_id": str(trip.agent_trip_id),
         "version": trip.version,
         "created_at": trip.created_at.isoformat() if trip.created_at else None,
@@ -94,7 +95,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
             "traveler_count": trip.traveler_count or 1,
             "budget_total": _money(budget_amount, source="manual"),
             "preferences": _string_list(preferences),
-            "pace": constraints.get("pace"),
+            "pace": normalize_pace(constraints.get("pace")),
             "party_type": constraints.get("party_type"),
             "special_constraints": _string_list(constraints),
         },

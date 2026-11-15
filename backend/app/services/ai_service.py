@@ -1,4 +1,5 @@
 import json
+import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -22,8 +23,10 @@ from app.db.models import AiRunLog, DayActivity, Trip, TripRevision
 from app.integrations.amap import AmapClient
 from app.integrations.llm import DeepSeekClient, FakeLLMClient, LLMClient, LLMResult
 from app.integrations.qweather import QWeatherClient
+from app.services.generation_planning import compile_generation_draft
 from app.services.itinerary_snapshot import build_itinerary_snapshot
 from app.services.poi_enrichment import enrich_itinerary_pois
+from app.services.trip_constraints import normalize_pace
 from app.services.trip_validation import enrich_route_checks, validate_trip_rules
 from app.services.versioning import bump_trip_version
 from app.services.weather_enrichment import enrich_itinerary_weather
@@ -36,19 +39,86 @@ TYPE_MAP = {
     "free_time": "other",
 }
 MAX_SCHEMA_REPAIR_RETRIES = 2
+MAX_REALITY_REPAIR_RETRIES = 2
 REPAIR_INSTRUCTION = """
 
 # JSON 修复模式
-上一次输出未通过 JSON Schema 校验。请根据用户原始需求和 validation_errors 修复 invalid_output。
-必须返回修复后的完整行程 JSON；只输出 JSON，不要说明、不要 Markdown 代码块。
-保持已经正确的活动、日期、时间和金额，只修复违反契约的部分。
+上一次规划草稿未通过严格契约校验。请根据用户原始需求和 validation_errors 修复 invalid_output。
+必须返回修复后的完整规划草稿；只输出 JSON，不要说明、不要 Markdown 代码块。
+不要输出 time_slot 或最终行程系统字段。保持已经正确的地点、顺序、时长和金额，只修复违反契约的部分。
+若 validation_errors 包含 DAY_TOO_LONG，不得仅压缩所有活动的停留时长来硬塞；
+必须优先删除低优先级活动，或将其移动到有余量的其他日期；
+修改后从 act-1 开始连续编号全部 activity_id。
+若包含 OPEN_HOURS_NO_FIT 或 OUTSIDE_OPEN_HOURS，必须把该活动移到营业时间内；
+可将午餐、自由活动后移，或跨天移动、替换、删除该活动，不得原样返回冲突顺序。
 """.strip()
+REALITY_REPAIR_INSTRUCTION = """
+
+# 真实地点与路线纠错模式
+上一次行程在真实 POI 匹配、路线耗时或业务规则校验中发现问题。
+请根据 validation_errors 和 verified_poi_candidates 修复完整规划草稿；只输出 JSON。
+只修改存在问题的部分，保持其他活动不变。精确时间由系统排程，不要输出 time_slot。
+若出现 DAY_SCHEDULE_OVERFLOW、TIME_OVERLAP、ROUTE_TIME_INFEASIBLE 或当天活动过多，
+不得只靠压缩停留时间硬塞进同一天；必须优先删除低优先级活动，或把活动移动到有余量的其他日期，
+并确保移动后仍符合日期、营业时间和行程顺序。删除或移动后重新连续编号全部 activity_id。
+若出现 OPEN_HOURS_NO_FIT 或 OUTSIDE_OPEN_HOURS，必须将受限活动提前到闭馆前完整完成；
+优先把午餐或自由活动后移，仍不可行时再跨天移动、替换或删除，禁止原样返回冲突顺序。
+距离只是风险信号，不是一票否决：若远距离地点名称明确、符合用户意图且时间可达，可以保留；
+若地点含糊或候选分店明显偏离当天行程，必须从 validation_errors 中的真实高德候选选择，
+把候选的精确 name 和 poi_id 原样写入 location；也可以更换搜索关键词后让系统再次查证。
+所有带 location 的活动最终都必须对应真实 POI；不得输出“附近餐厅”“返回酒店”“地点待确认”等占位地点，
+不得自行编造坐标、POI ID、地址或分店名称。
+""".strip()
+
+
+def _repair_opening_hours_order(
+    planning_draft: dict, repair_errors: list[dict]
+) -> dict | None:
+    """Move a closing-time-limited activity before a preceding flexible stop."""
+    repaired = deepcopy(planning_draft)
+    days = repaired.get("days")
+    if not isinstance(days, list):
+        return None
+    for error in repair_errors:
+        if error.get("code") not in {"OPEN_HOURS_NO_FIT", "OUTSIDE_OPEN_HOURS"}:
+            continue
+        match = re.search(r"days\.(\d+)\.activities\.(\d+)", str(error.get("path") or ""))
+        if match is None:
+            continue
+        day_position = int(match.group(1)) - 1
+        activity_position = int(match.group(2))
+        if not 0 <= day_position < len(days):
+            continue
+        activities = days[day_position].get("activities")
+        if not isinstance(activities, list) or not 0 < activity_position < len(activities):
+            continue
+        previous = activities[activity_position - 1]
+        if not isinstance(previous, dict) or previous.get("type") not in {"meal", "free_time"}:
+            continue
+        constrained = activities.pop(activity_position)
+        activities.insert(activity_position - 1, constrained)
+        sequence = 1
+        for day in days:
+            for activity in day.get("activities", []):
+                if isinstance(activity, dict):
+                    activity["activity_id"] = f"act-{sequence}"
+                    sequence += 1
+        return repaired
+    return None
+
+
 REPLAN_REPAIR_INSTRUCTION = """
 
 # JSON 修复模式
 上一次重排候选未通过契约或业务校验。请根据 validation_errors 修复 invalid_output。
-必须返回完整的候选 JSON，包含 summary、diff.ops 和 proposed_itinerary；只输出 JSON。
+必须返回完整的候选 JSON，包含 summary、diff.ops 和 proposed_day；只输出 JSON。
 只修复报错部分，不得扩大重排范围，不得更改未涉及活动的 activity_id。
+""".strip()
+RAW_JSON_RETRY_INSTRUCTION = """
+
+# JSON 重新输出模式
+上一次响应不是可解析的完整 JSON，可能被截断或混入了额外文字。
+请重新生成一次，并严格只输出一个完整 JSON 对象；不要 Markdown、不要解释、不要省略字段。
 """.strip()
 REVISION_REPAIR_INSTRUCTION = """
 
@@ -120,7 +190,7 @@ async def generate_initial_itinerary(
     )
     constraints = _generation_constraints(trip)
 
-    prompt_version = "v0.2"
+    prompt_version = "v0.4"
     run = AiRunLog(
         trip_id=trip_id,
         requested_by=user_id,
@@ -150,8 +220,8 @@ async def generate_initial_itinerary(
             "poi_candidates": poi_candidates,
             "additional_requirements": additional_requirements,
             "fallback_instruction": (
-                "若 poi_candidates 为空，不得编造 poi；可以安排 meal、transport、"
-                "hotel 或 free_time，且每天至少一个活动。"
+                "若 poi_candidates 为空或不足，只能提出高德可检索的具体真实地点，"
+                "poi_id 填 null 交给系统查证；禁止任何占位地点。"
             ),
         },
         ensure_ascii=False,
@@ -171,10 +241,11 @@ async def generate_initial_itinerary(
             timeout_seconds=settings.deepseek_timeout_seconds,
         )
 
+        planning_draft = result.parsed_data
         while True:
-            data = _complete_system_fields(result.parsed_data, trip)
-            failed_candidate = data
+            failed_candidate = planning_draft
             try:
+                data = compile_generation_draft(planning_draft, trip)
                 validate_itinerary(data)
                 _validate_initial_generation_content(data)
                 break
@@ -185,7 +256,7 @@ async def generate_initial_itinerary(
                 repair_payload = {
                     "original_request": run_input_snapshot,
                     "validation_errors": exc.detail,
-                    "invalid_output": data,
+                    "invalid_output": planning_draft,
                 }
                 result = await llm_client.generate_json(
                     system_prompt=f"{system_prompt}\n\n{REPAIR_INSTRUCTION}",
@@ -197,41 +268,99 @@ async def generate_initial_itinerary(
                     timeout_seconds=settings.deepseek_timeout_seconds,
                     temperature=0.3,
                 )
+                planning_draft = result.parsed_data
 
-        integration_warnings: list[dict] = list(pre_generation_warnings)
-        if _has_locations_to_enrich(data):
-            try:
-                data = await enrich_itinerary_pois(data, city=trip.city, client=amap_client)
-            except AppError as exc:
-                if not exc.code.startswith("AMAP_"):
-                    raise
-                integration_warnings.append(
-                    {
-                        "service": "amap",
-                        "code": exc.code,
-                        "message": exc.message,
-                        "degraded": True,
-                    }
+        reality_retry_count = 0
+        opening_order_repair_count = 0
+        while True:
+            integration_warnings: list[dict] = list(pre_generation_warnings)
+            poi_issues: list[dict] = []
+            if _has_locations_to_enrich(data):
+                try:
+                    data = await enrich_itinerary_pois(
+                        data,
+                        city=trip.city,
+                        origin_city=trip.origin_city,
+                        client=amap_client,
+                        verified_candidates=poi_candidates,
+                    )
+                    poi_issues = data.pop("_poi_resolution_issues", [])
+                except AppError as exc:
+                    if not exc.code.startswith("AMAP_"):
+                        raise
+                    integration_warnings.append(
+                        {
+                            "service": "amap",
+                            "code": exc.code,
+                            "message": exc.message,
+                            "degraded": True,
+                        }
+                    )
+
+            data, route_errors, route_warnings = await enrich_route_checks(
+                data, client=amap_client, reschedule=True
+            )
+            integration_warnings.extend({**warning, "degraded": True} for warning in route_warnings)
+            rule_result = validate_trip_rules(data)
+            repair_errors = [*poi_issues, *route_errors, *rule_result["errors"]]
+            if repair_errors and opening_order_repair_count < 2:
+                reordered_draft = _repair_opening_hours_order(planning_draft, repair_errors)
+                if reordered_draft is not None:
+                    opening_order_repair_count += 1
+                    planning_draft = reordered_draft
+                    failed_candidate = planning_draft
+                    data = compile_generation_draft(planning_draft, trip)
+                    validate_itinerary(data)
+                    _validate_initial_generation_content(data)
+                    continue
+            if repair_errors and reality_retry_count < MAX_REALITY_REPAIR_RETRIES:
+                reality_retry_count += 1
+                retry_count += 1
+                result = await llm_client.generate_json(
+                    system_prompt=f"{system_prompt}\n\n{REALITY_REPAIR_INSTRUCTION}",
+                    user_prompt=json.dumps(
+                        {
+                            "original_request": run_input_snapshot,
+                            "validation_errors": repair_errors,
+                            "verified_poi_candidates": poi_candidates,
+                            "invalid_output": planning_draft,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                    schema=schema,
+                    model=settings.deepseek_model,
+                    prompt_version=prompt_version,
+                    request_id=f"{request_id}-reality-repair-{reality_retry_count}",
+                    timeout_seconds=settings.deepseek_timeout_seconds,
+                    temperature=0.3,
                 )
+                planning_draft = result.parsed_data
+                failed_candidate = planning_draft
+                data = compile_generation_draft(planning_draft, trip)
+                validate_itinerary(data)
+                _validate_initial_generation_content(data)
+                continue
+
+            if poi_issues or route_errors or rule_result["errors"]:
+                raise AppError(
+                    "AGENT_CONSTRAINT_VIOLATION",
+                    "生成的行程在自动纠错后仍有未确认地点，或未通过时间、预算及真实路线校验",
+                    status_code=422,
+                    detail={
+                        **rule_result,
+                        "route_errors": route_errors,
+                        "poi_issues": poi_issues,
+                    },
+                )
+            break
+
         data, weather_warnings = await enrich_itinerary_weather(
             data,
             city_code=trip.city,
             client=get_qweather_client(),
         )
         integration_warnings.extend({**warning, "degraded": True} for warning in weather_warnings)
-        data, route_errors, route_warnings = await enrich_route_checks(data, client=amap_client)
-        integration_warnings.extend({**warning, "degraded": True} for warning in route_warnings)
-        integration_warnings.extend(
-            {**error, "degraded": True, "requires_user_review": True} for error in route_errors
-        )
-        rule_result = validate_trip_rules(data)
-        if rule_result["errors"]:
-            raise AppError(
-                "AGENT_CONSTRAINT_VIOLATION",
-                "生成的行程未通过时间、预算或真实路线校验",
-                status_code=422,
-                detail=rule_result,
-            )
         data["integration_warnings"] = integration_warnings
         validate_itinerary(data)
 
@@ -273,12 +402,12 @@ async def generate_initial_itinerary(
             error_code=exc.code,
             retry_count=retry_count,
             candidate=failed_candidate,
-            validation_errors=original_detail if exc.code == "AGENT_OUTPUT_INVALID" else None,
+            validation_errors=original_detail,
         )
         exc.detail = {
             "ai_run_id": run_id,
             "retry_count": retry_count,
-            "validation_errors": original_detail if exc.code == "AGENT_OUTPUT_INVALID" else None,
+            "validation_errors": original_detail,
             "provider_detail": original_detail if exc.code != "AGENT_OUTPUT_INVALID" else None,
         }
         raise
@@ -316,6 +445,18 @@ async def generate_replan_candidate(
         )
 
     old_itinerary = await build_itinerary_snapshot(session, trip_id)
+    target_day = next(
+        (day for day in old_itinerary.get("days", []) if day.get("day_index") == day_number),
+        None,
+    )
+    if target_day is None:
+        raise NotFoundError("指定日期不存在")
+    activity_numbers = [
+        int(match.group(1))
+        for day in old_itinerary.get("days", [])
+        for activity in day.get("activities", [])
+        if (match := re.fullmatch(r"act-(\d+)", str(activity.get("activity_id") or "")))
+    ]
     prompt_version = "v0.2"
     scope = {
         "type": "rest_of_day",
@@ -350,32 +491,64 @@ async def generate_replan_candidate(
     retry_count = 0
     failed_candidate: dict | None = None
     system_prompt = load_shared_prompt("replan-day", prompt_version)
-    user_prompt = json.dumps(
-        {
-            "itinerary_json": old_itinerary,
-            "scope": scope,
-            "trigger": effective_trigger,
-            "user_instruction": adjustment_requirements,
-            "candidate_replacements": candidate_replacements,
+    model_request = {
+        "trip_context": {
+            "city": old_itinerary.get("city"),
+            "meta": old_itinerary.get("meta"),
+            "next_activity_id": f"act-{max(activity_numbers, default=0) + 1}",
         },
+        "target_day": target_day,
+        "scope": scope,
+        "trigger": effective_trigger,
+        "user_instruction": adjustment_requirements,
+        "candidate_replacements": candidate_replacements,
+    }
+    user_prompt = json.dumps(
+        model_request,
         ensure_ascii=False,
         default=str,
     )
     request_id = f"ai-{run_id}-{uuid4().hex[:12]}"
     llm_client = get_llm_client()
     try:
-        result = await llm_client.generate_json(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            schema={},
-            model=settings.deepseek_model,
-            prompt_version=prompt_version,
-            request_id=request_id,
-            timeout_seconds=settings.deepseek_timeout_seconds,
-            temperature=0.5,
-        )
+        raw_json_retry_count = 0
         while True:
-            candidate = _complete_replan_candidate(result.parsed_data, old_itinerary)
+            try:
+                result = await llm_client.generate_json(
+                    system_prompt=(
+                        system_prompt
+                        if raw_json_retry_count == 0
+                        else f"{system_prompt}\n\n{RAW_JSON_RETRY_INSTRUCTION}"
+                    ),
+                    user_prompt=user_prompt,
+                    schema={},
+                    model=settings.deepseek_model,
+                    prompt_version=prompt_version,
+                    request_id=(
+                        request_id
+                        if raw_json_retry_count == 0
+                        else f"{request_id}-json-retry-{raw_json_retry_count}"
+                    ),
+                    timeout_seconds=settings.deepseek_timeout_seconds,
+                    temperature=0.5 if raw_json_retry_count == 0 else 0.2,
+                )
+                break
+            except AppError as exc:
+                if (
+                    exc.code != "AGENT_OUTPUT_INVALID"
+                    or raw_json_retry_count >= MAX_SCHEMA_REPAIR_RETRIES
+                ):
+                    raise
+                raw_json_retry_count += 1
+                retry_count += 1
+
+        schema_retry_count = 0
+        while True:
+            candidate = _complete_replan_candidate(
+                result.parsed_data,
+                old_itinerary,
+                target_day=day_number,
+            )
             failed_candidate = candidate
             try:
                 proposed = candidate["proposed_itinerary"]
@@ -388,24 +561,48 @@ async def generate_replan_candidate(
                 )
                 break
             except AppError as exc:
-                if exc.code != "AGENT_OUTPUT_INVALID" or retry_count >= MAX_SCHEMA_REPAIR_RETRIES:
+                if (
+                    exc.code != "AGENT_OUTPUT_INVALID"
+                    or schema_retry_count >= MAX_SCHEMA_REPAIR_RETRIES
+                ):
                     raise
+                schema_retry_count += 1
                 retry_count += 1
                 repair_payload = {
-                    "original_request": input_snapshot,
+                    "original_request": model_request,
                     "validation_errors": exc.detail,
-                    "invalid_output": candidate,
+                    "invalid_output": result.parsed_data,
                 }
-                result = await llm_client.generate_json(
-                    system_prompt=f"{system_prompt}\n\n{REPLAN_REPAIR_INSTRUCTION}",
-                    user_prompt=json.dumps(repair_payload, ensure_ascii=False, default=str),
-                    schema={},
-                    model=settings.deepseek_model,
-                    prompt_version=prompt_version,
-                    request_id=f"{request_id}-repair-{retry_count}",
-                    timeout_seconds=settings.deepseek_timeout_seconds,
-                    temperature=0.3,
-                )
+                repair_json_retry_count = 0
+                while True:
+                    try:
+                        repair_system_prompt = f"{system_prompt}\n\n{REPLAN_REPAIR_INSTRUCTION}"
+                        if repair_json_retry_count:
+                            repair_system_prompt += f"\n\n{RAW_JSON_RETRY_INSTRUCTION}"
+                        result = await llm_client.generate_json(
+                            system_prompt=repair_system_prompt,
+                            user_prompt=json.dumps(
+                                repair_payload, ensure_ascii=False, default=str
+                            ),
+                            schema={},
+                            model=settings.deepseek_model,
+                            prompt_version=prompt_version,
+                            request_id=(
+                                f"{request_id}-repair-{schema_retry_count}"
+                                f"-json-retry-{repair_json_retry_count}"
+                            ),
+                            timeout_seconds=settings.deepseek_timeout_seconds,
+                            temperature=0.3 if repair_json_retry_count == 0 else 0.2,
+                        )
+                        break
+                    except AppError as repair_exc:
+                        if (
+                            repair_exc.code != "AGENT_OUTPUT_INVALID"
+                            or repair_json_retry_count >= MAX_SCHEMA_REPAIR_RETRIES
+                        ):
+                            raise
+                        repair_json_retry_count += 1
+                        retry_count += 1
 
         result.parsed_data = candidate
         run.candidate_output = candidate
@@ -820,7 +1017,7 @@ async def _mark_run_failed(
     failed_run.status = "failed"
     failed_run.error_code = error_code
     failed_run.retry_count = retry_count
-    if candidate is not None:
+    if candidate is not None or validation_errors is not None:
         failed_run.candidate_output = {
             "invalid_output": candidate,
             "validation_errors": validation_errors,
@@ -849,7 +1046,12 @@ async def retry_failed_ai_run(
         raise NotFoundError("行程不存在")
 
     try:
-        data = await enrich_itinerary_pois(candidate, city=trip.city, client=get_amap_client())
+        data = await enrich_itinerary_pois(
+            candidate,
+            city=trip.city,
+            origin_city=trip.origin_city,
+            client=get_amap_client(),
+        )
         validate_itinerary(data)
         new_version = await bump_trip_version(
             session,
@@ -904,9 +1106,53 @@ def _has_locations_to_enrich(data: dict) -> bool:
     )
 
 
-def _complete_replan_candidate(candidate: dict, old_itinerary: dict) -> dict:
+def _complete_replan_candidate(
+    candidate: dict,
+    old_itinerary: dict,
+    *,
+    target_day: int | None = None,
+) -> dict:
     completed = dict(candidate)
-    proposed = dict(completed.get("proposed_itinerary") or {})
+    proposed_day = completed.pop("proposed_day", None)
+    if proposed_day is not None:
+        if target_day is None or not isinstance(proposed_day, dict):
+            raise AppError(
+                "AGENT_OUTPUT_INVALID",
+                "局部重排候选缺少有效的目标日期",
+                status_code=502,
+            )
+        original_day = next(
+            (day for day in old_itinerary.get("days", []) if day.get("day_index") == target_day),
+            None,
+        )
+        if (
+            original_day is None
+            or proposed_day.get("day_index") != target_day
+            or proposed_day.get("date") != original_day.get("date")
+        ):
+            raise AppError(
+                "AGENT_OUTPUT_INVALID",
+                "局部重排返回了错误的日期",
+                status_code=502,
+            )
+        proposed = deepcopy(old_itinerary)
+        merged_days: list[dict] = []
+        found_target = False
+        for day in proposed.get("days", []):
+            if day.get("day_index") == target_day:
+                merged_days.append(deepcopy(proposed_day))
+                found_target = True
+            else:
+                merged_days.append(day)
+        if not found_target:
+            raise AppError(
+                "AGENT_OUTPUT_INVALID",
+                "局部重排目标日期不存在",
+                status_code=502,
+            )
+        proposed["days"] = merged_days
+    else:
+        proposed = dict(completed.get("proposed_itinerary") or {})
     for field in (
         "schema_version",
         "trip_id",
@@ -922,6 +1168,7 @@ def _complete_replan_candidate(candidate: dict, old_itinerary: dict) -> dict:
         "candidates",
     ):
         proposed.setdefault(field, old_itinerary.get(field))
+    proposed["schema_version"] = "1.1"
     completed["proposed_itinerary"] = proposed
     return completed
 
@@ -1010,7 +1257,7 @@ def _rebase_replan_candidate(candidate: dict, current_itinerary: dict, target_da
 
 def _complete_system_fields(data: dict, trip: Trip) -> dict:
     completed = _normalize_generated_itinerary(deepcopy(data))
-    completed["schema_version"] = completed.get("schema_version") or "1.0"
+    completed["schema_version"] = "1.1"
     completed["trip_id"] = str(trip.agent_trip_id)
     completed["version"] = trip.version + 1
     completed["city"] = {**(completed.get("city") or {}), "name": trip.city}
@@ -1172,7 +1419,7 @@ def _generation_constraints(trip: Trip) -> dict:
             "source": "manual",
         },
         "preferences": [str(item) for item in preference_items],
-        "pace": constraints.get("pace"),
+        "pace": normalize_pace(constraints.get("pace")),
         "party_type": constraints.get("party_type"),
         "special_constraints": [str(item) for item in special_constraints],
     }
@@ -1183,7 +1430,7 @@ async def _prequery_poi_candidates(
 ) -> tuple[list[dict], list[dict]]:
     candidates: list[dict] = []
     warnings: list[dict] = []
-    for keyword in ("热门景点", "特色餐厅"):
+    for keyword in ("热门景点", "特色餐厅", "舒适型酒店", "交通枢纽"):
         try:
             result = await client.search_poi(keyword=keyword, city=city)
         except AppError as exc:
@@ -1208,6 +1455,10 @@ async def _prequery_poi_candidates(
                     "name": item.get("name"),
                     "type": item.get("type"),
                     "address": item.get("address"),
+                    "city": item.get("city"),
+                    "district": item.get("district"),
+                    "adcode": item.get("adcode"),
+                    "province": item.get("province"),
                     "lng": item.get("longitude"),
                     "lat": item.get("latitude"),
                     "open_hours_hint": None,
@@ -1217,7 +1468,7 @@ async def _prequery_poi_candidates(
     unique: dict[str, dict] = {}
     for item in candidates:
         unique[str(item.get("poi_id") or item["name"])] = item
-    return list(unique.values())[:12], warnings
+    return list(unique.values())[:24], warnings
 
 
 def _validate_initial_generation_content(data: dict) -> None:

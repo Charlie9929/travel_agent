@@ -182,7 +182,7 @@ export const api = {
   members: {
     list: (tripId: number) => request<ApiMember[]>(`/trips/${tripId}/members`),
     invite: (tripId: number, userId: number, role: "editor" | "viewer" = "editor") => request<ApiMember>(`/trips/${tripId}/members/invite`, { method: "POST", body: JSON.stringify({ user_id: userId, role }) }),
-    updateRole: (tripId: number, userId: number, role: "editor" | "viewer") => request<ApiMember>(`/trips/${tripId}/members/${userId}`, { method: "PUT", body: JSON.stringify({ role }) }),
+    updateRole: (tripId: number, userId: number, role: "editor" | "viewer") => request<{ updated: boolean }>(`/trips/${tripId}/members/${userId}`, { method: "PUT", body: JSON.stringify({ role }) }),
     remove: (tripId: number, userId: number) => request<{ deleted: boolean }>(`/trips/${tripId}/members/${userId}`, { method: "DELETE" }),
     leave: (tripId: number) => request<{ left: boolean }>(`/trips/${tripId}/members/leave`, { method: "POST" }),
     createShareCode: (tripId: number, expiresInHours = 72) => request<{ share_code: string; expires_at: string }>(`/trips/${tripId}/share-code`, { method: "POST", body: JSON.stringify({ expires_in_hours: expiresInHours }) }),
@@ -287,10 +287,21 @@ function mapAgentMessage(message: ApiAgentMessage): AgentMessage {
   return { id: message.id, conversationId: message.conversation_id, role: message.role, content: message.content, status: message.status, errorCode: message.error_code, structuredData: message.structured_data ?? {}, createdAt: message.created_at };
 }
 
+function activityEndTime(startTime: string | null, durationMinutes: number | null) {
+  if (!startTime || durationMinutes == null) return "待定";
+  const [hours, minutes] = startTime.slice(0, 5).split(":").map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return "待定";
+  const total = hours * 60 + minutes + durationMinutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
 export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requirements: ApiRequirement[], historyTrips: ApiTrip[] = []): Workspace {
   const activities = trip.days.flatMap((day) => day.activities.map((activity) => ({
     id: activity.id, day: day.day_number, date: day.date, order: activity.order_index,
-    time: activity.start_time?.slice(0, 5) ?? "待定", title: activity.title, type: activity.type,
+    time: activity.start_time?.slice(0, 5) ?? "待定",
+    endTime: activityEndTime(activity.start_time, activity.duration_min),
+    durationMinutes: activity.duration_min,
+    title: activity.title, type: activity.type,
     detail: activity.description ?? activity.location_name ?? "暂无活动说明", location: activity.location_name ?? "地点待定",
     latitude: activity.latitude === null ? null : Number(activity.latitude), longitude: activity.longitude === null ? null : Number(activity.longitude),
     estimatedPrice: activity.price_estimated === null ? null : Number(activity.price_estimated), actualPrice: activity.price_real === null ? null : Number(activity.price_real),
@@ -306,7 +317,8 @@ export function mapApiWorkspace(trip: ApiTripDetail, members: ApiMember[], requi
     const requirement = requirementByUser.get(member.user_id);
     return {
       id: member.user_id, name: member.nickname || member.username || `成员 ${member.user_id}`,
-      role: member.role === "owner" ? "房主" : member.role === "editor" ? "可编辑" : "只读",
+      permission: member.role,
+      role: member.role === "owner" ? "房主" : member.role === "editor" ? "可编辑" : "仅查看",
       status: requirement?.status === "completed" || member.requirement_status === "completed" ? "已补充" : "待补充",
       proxy: requirement?.filled_by_nickname ? `由${requirement.filled_by_nickname}代填` : member.requirement_filled_by_nickname ? `由${member.requirement_filled_by_nickname}代填` : undefined,
       avatar: member.avatar_url ? apiAssetUrl(member.avatar_url) : requirement?.avatar_url ? apiAssetUrl(requirement.avatar_url) : "",

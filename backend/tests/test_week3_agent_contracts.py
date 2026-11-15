@@ -15,13 +15,53 @@ from app.services.ai_service import (
     _complete_replan_candidate,
     _normalize_generated_itinerary,
     _rebase_replan_candidate,
+    _repair_opening_hours_order,
     _validate_initial_generation_content,
 )
 
 
+def test_opening_hours_repair_moves_limited_activity_before_meal() -> None:
+    draft = {
+        "days": [
+            {
+                "activities": [
+                    {"activity_id": "act-1", "type": "poi", "title": "沙滩"},
+                    {"activity_id": "act-2", "type": "meal", "title": "午餐"},
+                    {"activity_id": "act-3", "type": "poi", "title": "17点闭园的步道"},
+                ]
+            },
+            {"activities": [{"activity_id": "act-4", "type": "poi", "title": "古城"}]},
+        ]
+    }
+    errors = [
+        {
+            "code": "OPEN_HOURS_NO_FIT",
+            "path": "days.1.activities.2",
+            "message": "无法在营业时段内安排",
+        }
+    ]
+
+    repaired = _repair_opening_hours_order(draft, errors)
+
+    assert repaired is not None
+    assert [item["title"] for item in repaired["days"][0]["activities"]] == [
+        "沙滩",
+        "17点闭园的步道",
+        "午餐",
+    ]
+    assert [
+        item["activity_id"] for day in repaired["days"] for item in day["activities"]
+    ] == ["act-1", "act-2", "act-3", "act-4"]
+    assert [item["title"] for item in draft["days"][0]["activities"]] == [
+        "沙滩",
+        "午餐",
+        "17点闭园的步道",
+    ]
+
+
 def _itinerary() -> dict:
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "trip_id": "00000000-0000-0000-0000-000000000001",
         "version": 2,
         "city": {"name": "成都"},
@@ -47,6 +87,13 @@ def _itinerary() -> dict:
                         "type": "poi",
                         "title": "人民公园",
                         "time_slot": {"start": "09:00", "end": "11:00"},
+                        "location": {"name": "人民公园"},
+                        "cost": {
+                            "amount": 0,
+                            "currency": "CNY",
+                            "price_type": "estimate",
+                            "source": "llm",
+                        },
                         "status": "planned",
                     }
                 ],
@@ -69,9 +116,10 @@ def _itinerary() -> dict:
 
 
 def test_shared_replan_prompt_is_loaded_from_tech_one_document() -> None:
-    generation_prompt = load_shared_prompt("itinerary-generation", "v0.2")
+    generation_prompt = load_shared_prompt("itinerary-generation", "v0.4")
     prompt = load_shared_prompt("replan-day", "v0.2")
-    assert "国内城市自由行的行程规划器" in generation_prompt
+    assert "地点选择规划器" in generation_prompt
+    assert "不输出 time_slot" in generation_prompt
     assert "重排模块" in prompt
     assert "activity_id" in prompt
 
@@ -130,6 +178,25 @@ def test_replan_candidate_rejects_cross_day_diff() -> None:
         validate_replan_candidate(original, candidate, day_number=1, after_time="09:00")
     assert exc_info.value.code == "AGENT_OUTPUT_INVALID"
     assert exc_info.value.detail[0]["code"] == "OP_OUTSIDE_SCOPE_DAY"
+
+
+def test_scoped_replan_day_is_merged_into_full_itinerary() -> None:
+    original = _itinerary()
+    original["days"].append(
+        {"date": "2026-10-21", "day_index": 2, "theme": "第二天", "activities": []}
+    )
+    proposed_day = deepcopy(original["days"][0])
+    proposed_day["theme"] = "调整后的第一天"
+
+    completed = _complete_replan_candidate(
+        {"summary": "调整第一天", "diff": {"ops": []}, "proposed_day": proposed_day},
+        original,
+        target_day=1,
+    )
+
+    assert completed["proposed_itinerary"]["days"][0]["theme"] == "调整后的第一天"
+    assert completed["proposed_itinerary"]["days"][1] == original["days"][1]
+    assert "proposed_day" not in completed
 
 
 def test_revision_candidate_preserves_activity_ids() -> None:

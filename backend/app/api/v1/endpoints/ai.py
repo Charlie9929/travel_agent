@@ -34,6 +34,7 @@ from app.services.collaboration import (
     record_agent_workflow,
 )
 from app.services.guide_import_service import apply_guide_candidates, generate_guide_candidates
+from app.services.trip_constraints import normalize_constraints
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 trip_ai_router = APIRouter(prefix="/trips/{trip_id}/ai-runs", tags=["ai"])
@@ -69,8 +70,9 @@ async def clarify_preferences(
             "你是多人旅行助手的偏好理解模块。提取用户明确提供的偏好和限制，不能臆测。"
             "必须返回 JSON：ready(boolean)、questions(string数组，最多3个)、"
             "structured_constraints(object)、summary(string)。"
-            "城市、日期、人数必须存在；预算、出发地、节奏、兴趣、饮食或行动限制若未说明，"
-            "应简短追问。用户明确说不限、无要求或跳过时视为已回答。"
+            "城市、日期、人数是生成行程的必填信息。"
+            "预算、出发地、节奏、兴趣、饮食和行动限制均为选填；用户未主动说明时不要追问、不要臆测。"
+            "用户明确表达节奏时，pace 只能输出 relaxed、normal 或 intense；未表达时不要输出 pace。"
         ),
         user_prompt=json.dumps(input_data, ensure_ascii=False, default=str),
         schema={
@@ -84,14 +86,21 @@ async def clarify_preferences(
         temperature=0.2,
     )
     data = result.parsed_data
-    questions = [str(item) for item in data.get("questions", []) if str(item).strip()][:3]
+    required_questions = []
+    if not str(trip.city or "").strip():
+        required_questions.append("想去哪个城市旅行？")
+    if trip.start_date is None or trip.end_date is None:
+        required_questions.append("计划哪天出发、哪天返程？")
+    elif trip.end_date < trip.start_date:
+        required_questions.append("返程日期早于出发日期，请重新确认旅行日期。")
+    if not trip.traveler_count:
+        required_questions.append("这次一共有几位旅行者？")
+    structured_constraints = normalize_constraints(data.get("structured_constraints"))
     return ApiResponse(
         data={
-            "ready": bool(data.get("ready")) and not questions,
-            "questions": questions,
-            "structured_constraints": data.get("structured_constraints")
-            if isinstance(data.get("structured_constraints"), dict)
-            else {},
+            "ready": not required_questions,
+            "questions": required_questions[:3],
+            "structured_constraints": structured_constraints,
             "summary": str(data.get("summary") or payload.user_message or ""),
         }
     )

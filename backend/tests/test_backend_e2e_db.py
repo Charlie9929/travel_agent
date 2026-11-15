@@ -39,6 +39,10 @@ class StubAmapClient:
             ]
         }
 
+    async def routes(self, **kwargs) -> dict:
+        del kwargs
+        return {"routes": {}, "queried_at": None}
+
 
 class StubWeatherClient:
     async def weather_for_date(self, *, city_code: str, target_date) -> dict:
@@ -93,51 +97,27 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
         yield session
 
     itinerary_fixture = {
-        "schema_version": "1.0",
-        "trip_id": "",
-        "version": 1,
-        "city": {"name": "成都"},
-        "meta": {
-            "title": "成都联调行程",
-            "date_start": "2026-11-05",
-            "date_end": "2026-11-05",
-            "traveler_count": 2,
-            "budget_total": {
-                "amount": 1000,
-                "currency": "CNY",
-                "price_type": "estimate",
-                "source": "manual",
-            },
-        },
+        "city": "成都",
+        "title": "成都联调行程",
         "days": [
             {
                 "date": "2026-11-05",
                 "day_index": 1,
+                "theme": "公园慢游",
                 "activities": [
                     {
-                        "activity_id": "act-e2e-1",
+                        "activity_id": "act-1",
                         "type": "poi",
                         "title": "人民公园",
-                        "time_slot": {"start": "09:00", "end": "11:00"},
-                        "location": {"name": "人民公园", "poi_source": "llm"},
-                        "status": "planned",
+                        "duration_minutes": 120,
+                        "location": {"name": "人民公园", "poi_id": None},
+                        "cost": {"amount": 0},
+                        "note": None,
+                        "open_hours_hint": None,
                     }
                 ],
-                "transfers": [],
             }
         ],
-        "cost_summary": {
-            "total_estimate": {
-                "amount": 0,
-                "currency": "CNY",
-                "price_type": "estimate",
-                "source": "manual",
-            }
-        },
-        "members": [],
-        "permissions": {"collab_mode": "A2_poll"},
-        "revisions": [],
-        "candidates": [],
     }
     monkeypatch.setattr(
         ai_service,
@@ -233,14 +213,10 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
                 headers=owner_headers,
                 json={"trip_id": degraded_trip["id"]},
             )
-            assert degraded_generation.status_code == 200, degraded_generation.text
-            degraded_data = degraded_generation.json()["data"]
-            warning_codes = {
-                item["code"] for item in degraded_data["integration_warnings"]
-            }
-            assert {"AMAP_TIMEOUT", "QWEATHER_TIMEOUT"} <= warning_codes
-            assert degraded_data["itinerary"]["days"][0]["weather"] is None
-            assert degraded_data["itinerary"]["days"][0]["activities"]
+            assert degraded_generation.status_code == 422, degraded_generation.text
+            degraded_error = degraded_generation.json()
+            assert degraded_error["code"] == "AGENT_CONSTRAINT_VIOLATION"
+            assert degraded_error["data"]["validation_errors"]
 
             monkeypatch.setattr(ai_service, "get_amap_client", lambda: StubAmapClient())
             monkeypatch.setattr(ai_service, "get_qweather_client", lambda: StubWeatherClient())

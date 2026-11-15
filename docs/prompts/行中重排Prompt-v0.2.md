@@ -31,7 +31,8 @@ L1 校验会强制执行：
 
 | 变量 | 说明 |
 |---|---|
-| `{{itinerary_json}}` | 当前完整行程（**必须全量传给 LLM**，让它看到完整上下文才能不乱动其他天） |
+| `{{trip_context}}` | 城市、行程元信息、下一个可用 activity_id；不包含其他日期的活动 |
+| `{{target_day}}` | 当前要调整的单日完整数据 |
 | `{{scope}}` | `{ "type": "rest_of_day", "day_index": 2, "after_time": "14:00" }` |
 | `{{trigger}}` | 触发原因 `{ "reason_type": "rain"|"closed"|"queue"|"user_request", "description": "预报明天下午有雨", "target_activity_ids": ["act-8"] }` |
 | `{{candidate_replacements}}` | 模块② 预查的替换候选（按触发条件过滤，如"室内景点"），可选传入 |
@@ -39,10 +40,10 @@ L1 校验会强制执行：
 ## 4. System Prompt
 
 ```text
-你是旅行行程的「行中重排模块」。行程进行中，某个原因（下雨/闭馆/排队太长/用户临时要求）需要调整某一天下午的安排。你的任务：只重排 scope 指定的那一天、指定时间之后的活动，其余全部原样保留。
+你是旅行行程的「行中重排模块」。你只会收到要调整的 target_day，而不是完整行程。你的任务是只重排 scope 指定时间之后的活动，并只返回修改后的单日数据；后端会把该日安全合并回完整行程。
 
 # 铁律（违反任何一条 = 输出作废，L1 校验会拦）
-1. 范围硬约束：diff 只能涉及 scope.day_index 指定的那一天，且只能是该天内 time_slot.start ≥ scope.after_time 的活动。其他天、以及当天 after_time 之前的活动，一律原样保留。
+1. 范围硬约束：diff 只能涉及 scope.day_index，且只能修改 target_day 内 time_slot.start ≥ scope.after_time 的活动。当天 after_time 之前的活动一律原样保留。
 2. activity_id 不变：未修改的活动 activity_id 必须原样保留；被替换的活动改为 status="replaced" + replaced_reason；新增活动的 activity_id 接现有最大编号
 3. 被替换活动必须保留（status=replaced），不能删除——多人协同需要追溯"谁换掉了哪个"
 4. price_type 只能是 "estimate"，source 只能是 "llm"
@@ -52,8 +53,8 @@ L1 校验会强制执行：
 # 边界场景处理
 - trigger.target_activity_ids 中某些 id 在行程里不存在（已被队友替换）：忽略不存在的 id，按 after_time 时间范围自由重排即可。不要因为找不到某个 id 就报错。
 - scope.after_time 跨越某条活动中间（如 act-3 13:00-14:30，after_time=13:45）：整条 act-3 都算在重排范围内（因为 after_time 落在它中间），可以替换 act-3 本身。但 act-3 之前的活动必须原样保留。
-- 被替换活动本身已经是 status="replaced"（二次重排）：仍然把它算进 diff（op=remove），并新增新的替代活动。原来的 replaced 活动继续保留在 proposed_itinerary 里（追溯链不能断）。
-- scope.day_index 那天存在 status="pending_revision" 的活动（多人协同，队友刚推了但还没应用的修订）：忽略 pending 状态，只看已应用的活动。Agent 拿到的 itinerary_json 已经由上下文组装中间件过滤过，你不用管 pending。
+- 被替换活动本身已经是 status="replaced"（二次重排）：仍然把它算进 diff（op=remove），并新增新的替代活动。原来的 replaced 活动继续保留在 proposed_day 里（追溯链不能断）。
+- target_day 中存在 status="pending_revision" 的活动：忽略 pending 状态，只看已应用的活动。上下文组装中间件已过滤 pending。
 
 # 触发原因处理
 - trigger.reason_type = "rain" → 优先换室内/非露天活动（博物馆/美术馆/茶馆/商业街）
@@ -76,9 +77,9 @@ L1 校验会强制执行：
       }
     ]
   },
-  "proposed_itinerary": {
-    // 完整行程，结构同输入 itinerary_json
-    // 只有 diff 涉及的字段改值，其余完全照搬
+  "proposed_day": {
+    // 修改后的完整单日，结构同输入 target_day
+    // day_index 和 date 必须保持不变，只有 diff 涉及的字段改值
     // 被替换的活动：status="replaced", replaced_reason=从 trigger.description 提炼
     // 新增的替换活动：接在被替换位置附近，time_slot 连贯
   }
@@ -94,8 +95,11 @@ L1 校验会强制执行：
 ## 5. User 消息模板
 
 ```text
-【当前完整行程】
-{{itinerary_json}}
+【行程上下文】
+{{trip_context}}
+
+【需要调整的单日】
+{{target_day}}
 
 【重排范围 scope】
 {{scope}}
@@ -127,17 +131,13 @@ L1 校验会强制执行：
   { "poi_id": "B0FFK1", "name": "四川省美术馆", "type": "室内景点", "open_hours_hint": "09:00-17:00", "ticket_price_hint": "免费" },
   { "poi_id": "B0FFL3", "name": "鹤鸣茶社", "type": "茶馆", "open_hours_hint": "08:00-21:00", "ticket_price_hint": "人均40" }
 ]
-// itinerary_json（Day2 节选，完整行程必须全量传入）
+// target_day（只传需要调整的 Day2）
 {
-  "days": [
-    { "date": "2026-10-20", "day_index": 1, "activities": [/* 原样 */] },
-    { "date": "2026-10-21", "day_index": 2, "activities": [
-      { "activity_id": "act-7", "type": "poi", "title": "熊猫基地", "time_slot": { "start": "09:00", "end": "12:00" }, "status": "planned" },  // 在 14:00 前，不能动
-      { "activity_id": "act-8", "type": "poi", "title": "青龙湖湿地公园", "time_slot": { "start": "14:00", "end": "16:30" }, "status": "planned" },  // 被触发
-      { "activity_id": "act-9", "type": "poi", "title": "东安湖公园", "time_slot": { "start": "17:00", "end": "19:00" }, "status": "planned" },   // 被触发
-      { "activity_id": "act-10", "type": "meal", "title": "晚餐", "time_slot": { "start": "19:30", "end": "21:00" }, "status": "planned" }   // 19:30 ≥ 14:00，可以动但 trigger 没点名
-    ]},
-    { "date": "2026-10-22", "day_index": 3, "activities": [/* 原样，绝不能动 */] }
+  "date": "2026-10-21", "day_index": 2, "activities": [
+    { "activity_id": "act-7", "type": "poi", "title": "熊猫基地", "time_slot": { "start": "09:00", "end": "12:00" }, "status": "planned" },
+    { "activity_id": "act-8", "type": "poi", "title": "青龙湖湿地公园", "time_slot": { "start": "14:00", "end": "16:30" }, "status": "planned" },
+    { "activity_id": "act-9", "type": "poi", "title": "东安湖公园", "time_slot": { "start": "17:00", "end": "19:00" }, "status": "planned" },
+    { "activity_id": "act-10", "type": "meal", "title": "晚餐", "time_slot": { "start": "19:30", "end": "21:00" }, "status": "planned" }
   ]
 }
 ```
@@ -146,7 +146,7 @@ L1 校验会强制执行：
 
 - diff.ops 数量 ≥ 2（act-8、act-9 被替换为 replaced + 新增室内活动）
 - act-7 **原样保留**（在 14:00 前）
-- Day1 和 Day3 的 activities **完全不变**（activity_id 集合与输入一致）
+- 后端合并后 Day1 和 Day3 的 activities **完全不变**
 - act-8、act-9 在 proposed 中 status="replaced" + replaced_reason="降雨概率80%"
 - 新增活动 title 精确匹配 candidate_replacements 里的 name
 - Day2 下午时间连贯无重叠
@@ -164,7 +164,7 @@ L1 校验会强制执行：
 
 ### 用例 3：after_time 跨越活动中间
 
-**输入**：itinerary_json 的 Day2 有一条 act-3 13:00-14:30，scope.after_time = "13:45"
+**输入**：target_day 有一条 act-3 13:00-14:30，scope.after_time = "13:45"
 
 **预期输出要点**
 
@@ -174,7 +174,7 @@ L1 校验会强制执行：
 
 ### 用例 4：二次重排（被替换活动已存在）
 
-**输入**：itinerary_json 中 act-8 已经是 status="replaced"（上次重排替换过），这次又触发 replace act-8 附近的活动
+**输入**：target_day 中 act-8 已经是 status="replaced"（上次重排替换过），这次又触发 replace act-8 附近的活动
 
 **预期输出要点**
 
@@ -194,7 +194,7 @@ L1 校验会强制执行：
 
 | 风险 | 应对 |
 |---|---|
-| LLM 不小心改了其他天的活动 | L1 校验硬拦：activity_id_validator 检查非 scope 天的 id 集合是否完全一致；diff_scope_validator 检查 day_index |
+| LLM 试图修改其他天 | 模型输入不再包含其他日期；后端只用 proposed_day 替换目标日，并继续执行 L1 范围校验 |
 | 被替换活动被删除而非保留 replaced | activity_id_validator 检查原始 activity_id 是否还在 proposed 中（scope 场景只查 after_time 之前的；revise 场景查全部） |
 | 替换活动超出时间限制（比如 17:00 闭馆的博物馆安排到 18:00） | few-shot 示范；open_hours_hint 字段已在 candidate_replacements 中提供，Agent 应参考 |
 | 多人协同下 pending_revision 冲突 | 见 [03-多人协同上下文组装规则](../03-多人协同上下文组装规则.md)，上下文中间件已过滤 pending |

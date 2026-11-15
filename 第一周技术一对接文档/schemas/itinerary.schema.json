@@ -1,13 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "itinerary.schema.json",
-  "title": "AI 多人旅行规划助手 · 行程数据 Schema v1.0",
+  "title": "AI 多人旅行规划助手 · 行程数据 Schema v1.1",
   "description": "Agent 输出的行程结构化数据契约。限定国内单个城市自由行；预留多人协同（成员/权限/修改记录）字段；价格必须区分 AI 估算与真实报价。",
   "type": "object",
+  "additionalProperties": false,
   "required": ["schema_version", "trip_id", "version", "city", "meta", "days", "cost_summary"],
   "properties": {
     "schema_version": {
-      "const": "1.0",
+      "const": "1.1",
       "description": "Schema 版本号，结构变更时递增"
     },
     "trip_id": {
@@ -181,11 +182,17 @@
       "type": "array",
       "description": "【预留 · 第3周启用】攻略导入候选条目（附加E）：LLM 从用户粘贴的游记文本中提取，用户勾选确认后转为正式 activity",
       "items": { "$ref": "#/$defs/candidate" }
+    },
+    "integration_warnings": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "第三方服务降级或查询警告，由后端维护"
     }
   },
   "$defs": {
     "money": {
       "type": "object",
+      "additionalProperties": false,
       "description": "金额结构。Baseline 硬要求：AI 估算价与真实查询报价必须分开标注",
       "required": ["amount", "currency", "price_type"],
       "properties": {
@@ -223,6 +230,7 @@
     },
     "location": {
       "type": "object",
+      "additionalProperties": false,
       "description": "地点。坐标与 POI ID 由信息采集模块通过地图 API 回填，LLM 不得编造 poi_id",
       "required": ["name"],
       "properties": {
@@ -250,6 +258,7 @@
     },
     "time_slot": {
       "type": "object",
+      "additionalProperties": false,
       "description": "时间段，24 小时制 HH:MM；跨天的酒店住宿按入住当天记录",
       "required": ["start", "end"],
       "properties": {
@@ -265,8 +274,9 @@
     },
     "activity": {
       "type": "object",
+      "additionalProperties": false,
       "description": "行程活动条目（景点/餐饮/住宿/交通/自由时间）",
-      "required": ["activity_id", "type", "title", "time_slot"],
+      "required": ["activity_id", "type", "title", "time_slot", "location"],
       "properties": {
         "activity_id": {
           "type": "string",
@@ -289,6 +299,16 @@
         "open_hours_hint": {
           "type": ["string", "null"],
           "description": "开放时间提示（LLM 常识性参考值）；准确值以地图 API 查询为准并带时间戳"
+        },
+        "open_hours_source": {
+          "type": ["string", "null"]
+        },
+        "open_hours_fetched_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "quoted_cost": {
+          "$ref": "#/$defs/money"
         },
         "status": {
           "enum": ["planned", "confirmed", "done", "replaced", "removed"],
@@ -339,6 +359,7 @@
     },
     "day": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["date", "day_index", "activities"],
       "properties": {
         "date": { "type": "string", "format": "date" },

@@ -3,6 +3,7 @@ export type Tab = "lobby" | "world" | "functions" | "home";
 export type Member = {
   id: number;
   name: string;
+  permission: "owner" | "editor" | "viewer";
   role?: string;
   status: "已补充" | "待补充";
   proxy?: string;
@@ -16,6 +17,8 @@ export type Activity = {
   date: string;
   order: number;
   time: string;
+  endTime: string;
+  durationMinutes: number | null;
   title: string;
   type: "sight" | "food" | "hotel" | "transport" | "other";
   detail: string;

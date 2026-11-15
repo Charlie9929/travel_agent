@@ -2,6 +2,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any, Protocol
 
 import httpx
@@ -40,7 +41,7 @@ class FakeLLMClient:
     def __init__(self, fixture: dict[str, Any] | None = None) -> None:
         self._has_custom_fixture = fixture is not None
         self.fixture = fixture or {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "trip_id": "",
             "version": 1,
             "city": {"name": "成都"},
@@ -67,6 +68,20 @@ class FakeLLMClient:
                             "type": "free_time",
                             "title": "Mock 自由活动",
                             "time_slot": {"start": "09:00", "end": "10:00"},
+                            "location": {
+                                "name": "人民公园",
+                                "address": None,
+                                "lng": None,
+                                "lat": None,
+                                "poi_id": None,
+                                "poi_source": None,
+                            },
+                            "cost": {
+                                "amount": 0,
+                                "currency": "CNY",
+                                "price_type": "estimate",
+                                "source": "llm",
+                            },
                             "status": "planned",
                         }
                     ],
@@ -101,34 +116,71 @@ class FakeLLMClient:
     ) -> LLMResult:
         del schema, timeout_seconds, temperature
         fixture = self.fixture
-        if not self._has_custom_fixture and "偏好理解模块" in system_prompt:
+        if not self._has_custom_fixture and "地点选择规划器" in system_prompt:
+            request_data = json.loads(user_prompt)
+            constraints = request_data.get("constraints") or {}
+            start_date = date.fromisoformat(constraints.get("date_start") or "2026-01-01")
+            end_date = date.fromisoformat(constraints.get("date_end") or start_date.isoformat())
+            fixture = {
+                "city": constraints.get("city") or "成都",
+                "title": "Mock 行程",
+                "days": [
+                    {
+                        "date": (start_date + timedelta(days=offset)).isoformat(),
+                        "day_index": offset + 1,
+                        "theme": "Mock day",
+                        "activities": [
+                            {
+                                "activity_id": f"act-{offset + 1}",
+                                "type": "free_time",
+                                "title": "人民公园慢游",
+                                "duration_minutes": 60,
+                                "location": {"name": "人民公园", "poi_id": None},
+                                "cost": {"amount": 0},
+                                "note": None,
+                                "open_hours_hint": None,
+                            }
+                        ],
+                    }
+                    for offset in range((end_date - start_date).days + 1)
+                ],
+            }
+        elif not self._has_custom_fixture and "偏好理解模块" in system_prompt:
             request_data = json.loads(user_prompt)
             trip = request_data.get("trip") or {}
             latest = str(request_data.get("latest_user_message") or "")
             questions = []
-            if not trip.get("origin_city") and not any(
-                word in latest for word in ("出发", "不限", "跳过")
-            ):
-                questions.append("从哪座城市出发？如果不考虑大交通，可以回答“不限”。")
-            if trip.get("budget") is None and not any(
-                word in latest for word in ("预算", "不限", "跳过")
-            ):
-                questions.append("这次旅行的人均或总预算大约是多少？")
-            if not latest.strip():
-                questions.append("你们更喜欢轻松、美食、文化还是高强度打卡？")
+            if not trip.get("city"):
+                questions.append("想去哪个城市旅行？")
+            if not trip.get("start_date") or not trip.get("end_date"):
+                questions.append("计划哪天出发、哪天返程？")
+            if not trip.get("traveler_count"):
+                questions.append("这次一共有几位旅行者？")
+            structured_constraints = {"notes": latest} if latest.strip() else {}
+            if any(word in latest for word in ("轻松", "休闲", "悠闲", "不要太赶")):
+                structured_constraints["pace"] = "relaxed"
+            elif any(word in latest for word in ("紧凑", "高强度", "特种兵")):
+                structured_constraints["pace"] = "intense"
             fixture = {
                 "ready": not questions,
                 "questions": questions[:3],
-                "structured_constraints": {"notes": latest},
+                "structured_constraints": structured_constraints,
                 "summary": latest,
             }
         elif not self._has_custom_fixture and "重排模块" in system_prompt:
             request_data = json.loads(user_prompt)
-            fixture = {
-                "summary": "Fake LLM 重排候选（未修改活动）",
-                "diff": {"ops": []},
-                "proposed_itinerary": request_data["itinerary_json"],
-            }
+            if "target_day" in request_data:
+                fixture = {
+                    "summary": "Fake LLM 局部重排候选（未修改活动）",
+                    "diff": {"ops": []},
+                    "proposed_day": request_data["target_day"],
+                }
+            else:
+                fixture = {
+                    "summary": "Fake LLM 重排候选（未修改活动）",
+                    "diff": {"ops": []},
+                    "proposed_itinerary": request_data["itinerary_json"],
+                }
         elif not self._has_custom_fixture and "修改模块" in system_prompt:
             request_data = json.loads(user_prompt)
             fixture = {
@@ -235,6 +287,7 @@ class DeepSeekClient:
         }
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient()
+        content = ""
         try:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
@@ -276,7 +329,17 @@ class DeepSeekClient:
             parsed = _parse_json_object(content)
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise AppError(
-                "AGENT_OUTPUT_INVALID", "DeepSeek 未返回有效 JSON", status_code=502
+                "AGENT_OUTPUT_INVALID",
+                "DeepSeek 未返回有效 JSON",
+                status_code=502,
+                detail={
+                    "finish_reason": (
+                        body.get("choices", [{}])[0].get("finish_reason")
+                        if body.get("choices")
+                        else None
+                    ),
+                    "response_chars": len(content) if isinstance(content, str) else 0,
+                },
             ) from exc
 
         usage = body.get("usage", {})

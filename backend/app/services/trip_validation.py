@@ -72,14 +72,26 @@ def validate_trip_rules(
                     )
                 else:
                     timed.append((start, end, activity_id or str(index)))
-            activity_type = activity.get("type")
             location = activity.get("location") or {}
-            if activity_type in {"poi", "meal", "hotel"} and not location.get("name"):
-                warnings.append(
+            if not location.get("name"):
+                errors.append(
                     {
                         "code": "LOCATION_UNCONFIRMED",
                         "path": f"{path}.location",
-                        "message": "地点尚未确认",
+                        "message": "每个活动都必须有具体地点",
+                    }
+                )
+            elif (
+                location.get("poi_source") != "amap"
+                or not location.get("poi_id")
+                or location.get("lng") is None
+                or location.get("lat") is None
+            ):
+                errors.append(
+                    {
+                        "code": "LOCATION_UNVERIFIED",
+                        "path": f"{path}.location",
+                        "message": "地点必须经过高德查证并包含 POI ID 与坐标",
                     }
                 )
             if location.get("poi_id") and location.get("poi_source") == "llm":
@@ -118,16 +130,20 @@ def validate_trip_rules(
             open_hours = activity.get("open_hours_hint") or (activity.get("extra") or {}).get(
                 "open_hours_hint"
             )
-            if _valid_time(start) and isinstance(open_hours, str):
+            if (
+                activity.get("type") != "transport"
+                and _valid_time(start)
+                and isinstance(open_hours, str)
+            ):
                 ranges = _opening_ranges(open_hours)
-                if ranges and not any(
-                    _time_in_range(start, item_start, item_end) for item_start, item_end in ranges
-                ):
+                if ranges and not _activity_fits_open_hours(start, end, ranges):
                     errors.append(
                         {
                             "code": "OUTSIDE_OPEN_HOURS",
                             "path": f"{path}.time_slot.start",
-                            "message": f"活动开始时间 {start} 不在查询到的营业时段 {open_hours} 内",
+                            "message": (
+                                f"活动时段 {start}-{end} 不在查询到的营业时段 {open_hours} 内"
+                            ),
                         }
                     )
         timed.sort()
@@ -160,7 +176,13 @@ def validate_trip_rules(
             "time": not any(item["code"].startswith(("TIME", "INVALID_TIME")) for item in errors),
             "budget": not any(item["code"] == "BUDGET_EXCEEDED" for item in errors),
             "location_and_source": not any(
-                item["code"] in {"UNTRUSTED_POI_ID", "QUOTED_PRICE_MISSING_TIMESTAMP"}
+                item["code"]
+                in {
+                    "LOCATION_UNCONFIRMED",
+                    "LOCATION_UNVERIFIED",
+                    "UNTRUSTED_POI_ID",
+                    "QUOTED_PRICE_MISSING_TIMESTAMP",
+                }
                 for item in errors
             ),
             "opening_hours": not any(item["code"] == "OUTSIDE_OPEN_HOURS" for item in errors),
@@ -170,9 +192,9 @@ def validate_trip_rules(
 
 
 async def enrich_route_checks(
-    itinerary: dict[str, Any], *, client: AmapClient
+    itinerary: dict[str, Any], *, client: AmapClient, reschedule: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Query real routes, persist transfer options, and verify adjacent time gaps."""
+    """Query real routes, persist transfers, and optionally assign exact clock times."""
     data = deepcopy(itinerary)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -180,10 +202,38 @@ async def enrich_route_checks(
     for day in data.get("days", []):
         activities = day.get("activities", [])
         transfers: list[dict[str, Any]] = []
+        original_slots = [deepcopy(activity.get("time_slot")) for activity in activities]
+        schedule_failed = False
+        if reschedule and activities:
+            first_slot = activities[0].get("time_slot") or {}
+            first_start = first_slot.get("start")
+            if _valid_time(first_start):
+                schedule_error = _reschedule_activity(
+                    activities[0], earliest_start=_minutes(first_start)
+                )
+                if schedule_error:
+                    schedule_failed = True
+                    errors.append(
+                        {
+                            "code": schedule_error[0],
+                            "path": f"days.{day.get('day_index')}.activities.0",
+                            "message": schedule_error[1],
+                        }
+                    )
         for index, (current, following) in enumerate(zip(activities, activities[1:], strict=False)):
+            if schedule_failed:
+                break
             origin = current.get("location") or {}
             destination = following.get("location") or {}
-            if None in (
+            durations: list[int] = []
+            explicit_transport = (
+                current.get("type") == "transport" or following.get("type") == "transport"
+            )
+            if explicit_transport:
+                # The transport activity itself already owns the movement duration.
+                # Querying another route beside it would count the same trip twice.
+                pass
+            elif None in (
                 origin.get("lat"),
                 origin.get("lng"),
                 destination.get("lat"),
@@ -196,49 +246,76 @@ async def enrich_route_checks(
                         "message": "活动缺少真实坐标，无法校验交通时间",
                     }
                 )
-                continue
-            try:
-                result = await client.routes(
-                    from_lng=float(origin["lng"]),
-                    from_lat=float(origin["lat"]),
-                    to_lng=float(destination["lng"]),
-                    to_lat=float(destination["lat"]),
-                    city_code=city_code,
-                )
-            except AppError as exc:
-                warnings.append(
-                    {
-                        "code": "ROUTE_PROVIDER_UNAVAILABLE",
-                        "path": f"days.{day.get('day_index')}.transfers.{index}",
-                        "message": f"真实路线暂时无法查询：{exc.message}",
-                    }
-                )
-                continue
-            queried_at = result.get("queried_at")
-            if isinstance(queried_at, datetime):
-                queried_at = queried_at.astimezone(UTC).isoformat()
-            options = [
-                {
-                    "mode": mode,
-                    "distance_km": round(float(route.get("distance_m", 0)) / 1000, 2),
-                    "duration_min": int(route.get("duration_min") or 0),
-                    "transit_count": route.get("transit_count"),
-                    "source": "amap",
-                    "fetched_at": queried_at,
-                }
-                for mode, route in (result.get("routes") or {}).items()
-                if route.get("available")
-            ]
-            transfers.append(
-                {
-                    "from_activity_id": current.get("activity_id"),
-                    "to_activity_id": following.get("activity_id"),
-                    "options": options,
-                }
-            )
-            durations = [item["duration_min"] for item in options if item["duration_min"] > 0]
+            else:
+                try:
+                    result = await client.routes(
+                        from_lng=float(origin["lng"]),
+                        from_lat=float(origin["lat"]),
+                        to_lng=float(destination["lng"]),
+                        to_lat=float(destination["lat"]),
+                        city_code=city_code,
+                    )
+                except AppError as exc:
+                    warnings.append(
+                        {
+                            "code": "ROUTE_PROVIDER_UNAVAILABLE",
+                            "path": f"days.{day.get('day_index')}.transfers.{index}",
+                            "message": f"真实路线暂时无法查询：{exc.message}",
+                        }
+                    )
+                    result = None
+                if result is not None:
+                    queried_at = result.get("queried_at")
+                    if isinstance(queried_at, datetime):
+                        queried_at = queried_at.astimezone(UTC).isoformat()
+                    options = [
+                        {
+                            "mode": mode,
+                            "distance_km": round(float(route.get("distance_m", 0)) / 1000, 2),
+                            "duration_min": int(route.get("duration_min") or 0),
+                            "transit_count": route.get("transit_count"),
+                            "source": "amap",
+                            "fetched_at": queried_at,
+                        }
+                        for mode, route in (result.get("routes") or {}).items()
+                        if route.get("available")
+                    ]
+                    transfers.append(
+                        {
+                            "from_activity_id": current.get("activity_id"),
+                            "to_activity_id": following.get("activity_id"),
+                            "options": options,
+                        }
+                    )
+                    durations = [
+                        item["duration_min"] for item in options if item["duration_min"] > 0
+                    ]
+
             current_end = (current.get("time_slot") or {}).get("end")
             next_start = (following.get("time_slot") or {}).get("start")
+            if reschedule and _valid_time(current_end) and _valid_time(next_start):
+                travel_and_buffer = (
+                    0
+                    if explicit_transport
+                    else min(durations) + 15
+                    if durations
+                    else 30
+                )
+                earliest_start = max(
+                    _minutes(next_start), _minutes(current_end) + travel_and_buffer
+                )
+                schedule_error = _reschedule_activity(following, earliest_start=earliest_start)
+                if schedule_error:
+                    schedule_failed = True
+                    errors.append(
+                        {
+                            "code": schedule_error[0],
+                            "path": f"days.{day.get('day_index')}.activities.{index + 1}",
+                            "message": schedule_error[1],
+                        }
+                    )
+                    break
+                next_start = (following.get("time_slot") or {}).get("start")
             if durations and _valid_time(current_end) and _valid_time(next_start):
                 available_gap = _minutes(next_start) - _minutes(current_end)
                 if available_gap >= 0 and min(durations) > available_gap:
@@ -253,6 +330,11 @@ async def enrich_route_checks(
                             ),
                         }
                     )
+        if schedule_failed:
+            # Do not return a half-rescheduled day. Otherwise later validation reports
+            # misleading overlaps between shifted and still-original activities.
+            for activity, original_slot in zip(activities, original_slots, strict=True):
+                activity["time_slot"] = original_slot
         day["transfers"] = transfers
     return data, errors, warnings
 
@@ -272,15 +354,85 @@ def _minutes(value: str) -> int:
     return int(hour) * 60 + int(minute)
 
 
+def _format_minutes(value: int) -> str:
+    return f"{value // 60:02d}:{value % 60:02d}"
+
+
 def _opening_ranges(value: str) -> list[tuple[str, str]]:
-    """Parse common AMap ranges such as 09:00-18:00 without guessing prose."""
-    return [
-        (f"{start_hour}:{start_minute}", f"{end_hour}:{end_minute}")
-        for start_hour, start_minute, end_hour, end_minute in re.findall(
-            r"([01]\d|2[0-3]):([0-5]\d)\s*[-~至—]\s*([01]\d|2[0-3]):([0-5]\d)",
-            value,
+    """Parse AMap ranges, including its common all-day marker 00:00-24:00."""
+    ranges: list[tuple[str, str]] = []
+    for start_hour, start_minute, end_hour, end_minute in re.findall(
+        r"(\d{1,2}):(\d{2})\s*[-~至—]\s*(\d{1,2}):(\d{2})", value
+    ):
+        start_h, start_m = int(start_hour), int(start_minute)
+        end_h, end_m = int(end_hour), int(end_minute)
+        if not (0 <= start_h <= 23 and 0 <= start_m <= 59):
+            continue
+        if not (0 <= end_h <= 24 and 0 <= end_m <= 59):
+            continue
+        if end_h == 24 and end_m != 0:
+            continue
+        ranges.append((f"{start_h:02d}:{start_m:02d}", f"{end_h:02d}:{end_m:02d}"))
+    return ranges
+
+
+def _reschedule_activity(
+    activity: dict[str, Any], *, earliest_start: int
+) -> tuple[str, str] | None:
+    slot = activity.get("time_slot") or {}
+    start = slot.get("start")
+    end = slot.get("end")
+    if not (_valid_time(start) and _valid_time(end)):
+        return None
+    duration = max(_minutes(end) - _minutes(start), 30)
+    open_hours = None
+    if activity.get("type") != "transport":
+        open_hours = activity.get("open_hours_hint") or (activity.get("extra") or {}).get(
+            "open_hours_hint"
         )
-    ]
+    ranges = _opening_ranges(open_hours) if isinstance(open_hours, str) else []
+    scheduled_start = _next_open_start(earliest_start, duration, ranges)
+    if scheduled_start is None:
+        return (
+            "OPEN_HOURS_NO_FIT",
+            f"活动“{activity.get('title')}”无法在营业时段 {open_hours} 内安排完整时长",
+        )
+    scheduled_end = scheduled_start + duration
+    if scheduled_end >= 24 * 60:
+        return "DAY_SCHEDULE_OVERFLOW", "结合营业时间和交通耗时后，当天活动无法在午夜前完成"
+    activity["time_slot"] = {
+        "start": _format_minutes(scheduled_start),
+        "end": _format_minutes(scheduled_end),
+    }
+    return None
+
+
+def _next_open_start(
+    earliest_start: int, duration: int, ranges: list[tuple[str, str]]
+) -> int | None:
+    if not ranges:
+        return earliest_start
+    candidates: list[int] = []
+    for start, end in ranges:
+        start_minute = _minutes(start)
+        end_minute = _minutes(end)
+        intervals = (
+            [(start_minute, end_minute)]
+            if end_minute >= start_minute
+            else [(start_minute, 24 * 60), (0, end_minute)]
+        )
+        for interval_start, interval_end in intervals:
+            candidate = max(earliest_start, interval_start)
+            if candidate + duration <= interval_end:
+                candidates.append(candidate)
+    return min(candidates) if candidates else None
+
+
+def _activity_fits_open_hours(start: str, end: str, ranges: list[tuple[str, str]]) -> bool:
+    start_minute = _minutes(start)
+    end_minute = _minutes(end)
+    duration = max(end_minute - start_minute, 0)
+    return _next_open_start(start_minute, duration, ranges) == start_minute
 
 
 def _time_in_range(value: str, start: str, end: str) -> bool:

@@ -141,9 +141,12 @@ class AmapClient:
         origin = f"{from_lng:.6f},{from_lat:.6f}"
         destination = f"{to_lng:.6f},{to_lat:.6f}"
         specs = {
-            "walk": ("/v5/direction/walking", {"show_fields": "cost"}),
-            "bike": ("/v5/direction/bicycling", {"show_fields": "cost"}),
-            "drive": ("/v5/direction/driving", {"show_fields": "cost", "strategy": 32}),
+            "walk": ("/v5/direction/walking", {"show_fields": "cost,polyline"}),
+            "bike": ("/v5/direction/bicycling", {"show_fields": "cost,polyline"}),
+            "drive": (
+                "/v5/direction/driving",
+                {"show_fields": "cost,polyline", "strategy": 32},
+            ),
         }
         results: dict[str, Any] = {}
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
@@ -173,7 +176,7 @@ class AmapClient:
                             "destination": destination,
                             "city1": city_code,
                             "city2": city_code,
-                            "show_fields": "cost",
+                            "show_fields": "cost,polyline",
                         },
                     )
                     response.raise_for_status()
@@ -199,4 +202,34 @@ class AmapClient:
             "available": True,
             "distance_m": int(float(first.get("distance", 0))),
             "duration_min": round(float(duration) / 60) if duration else None,
+            "path": AmapClient._extract_route_path(first),
         }
+
+    @staticmethod
+    def _extract_route_path(candidate: dict[str, Any]) -> list[list[float]]:
+        """Collect AMap step polylines in response order for direct map rendering."""
+        points: list[list[float]] = []
+
+        def append_polyline(value: str) -> None:
+            for raw_point in value.split(";"):
+                try:
+                    lng_text, lat_text = raw_point.split(",", maxsplit=1)
+                    point = [float(lng_text), float(lat_text)]
+                except (TypeError, ValueError):
+                    continue
+                if not points or points[-1] != point:
+                    points.append(point)
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key == "polyline" and isinstance(child, str):
+                        append_polyline(child)
+                    else:
+                        visit(child)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child)
+
+        visit(candidate)
+        return points

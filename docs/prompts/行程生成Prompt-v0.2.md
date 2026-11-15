@@ -69,8 +69,9 @@
 6. days 数组必须覆盖 constraints.date_start 到 constraints.date_end 的每一天，一天不能少
 7. 每个 day 内 activities 按 time_slot.start 升序排列，且前一个的 end 必须严格早于后一个的 start（时间不能重叠、不能倒序）
 8. 所有活动必须在 constraints.city 内，绝不跨市
-9. 景点类活动（type=poi）的 title 必须精确匹配 poi_candidates 里某个条目的 name，禁止编造
+9. 优先从 poi_candidates 选择地点；不在预查池中时必须输出可被地图检索的具体场所或具体分店全名，禁止使用“附近餐厅”“当地农家菜”“返回酒店”“自由安排”等占位地点
 10. 总 cost 合计不能超过 constraints.budget_total.amount
+11. 每个活动的 location 都必须是一个现实中可查证的具体地点。若输入包含系统动态检索得到的候选，必须将所选候选的 name 与 poi_id 原样写入 location；禁止自行编造 poi_id、坐标、地址或分店名
 
 # 时间安排参考
 - 每天从 08:30-09:30 之间开始
@@ -127,7 +128,7 @@
             "address": null,
             "lng": null,
             "lat": null,
-            "poi_id": null,
+            "poi_id": string | null（只能复制输入中已查证候选的 poi_id）,
             "poi_source": null
           },
           "cost": {
