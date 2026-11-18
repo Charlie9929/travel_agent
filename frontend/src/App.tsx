@@ -10,6 +10,8 @@ import { ExpenseSheet, type ExpenseFormValues } from "./components/ExpenseSheet"
 import { HighlightSheet } from "./components/HighlightSheet";
 import { ModalSheet } from "./components/ModalSheet";
 import { PasswordSheet } from "./components/PasswordSheet";
+import { RevisionSheet } from "./components/RevisionSheet";
+import { SaveTextSheet } from "./components/SaveTextSheet";
 import { TripSettingsSheet } from "./components/TripSettingsSheet";
 import { TravelJournalSheet } from "./components/TravelJournalSheet";
 import {
@@ -20,6 +22,7 @@ import {
   mapApiWorkspace,
   type ApiRequirement,
   type ApiHighlight,
+  type ApiRevision,
   type ApiTrip,
   type ApiUserSearch,
   type JsonObject,
@@ -34,6 +37,18 @@ import type { Activity, AgentMessage, AuthUser, LobbyMessage, ReplanResult, Tab,
 
 function hasToken() {
   return Boolean(localStorage.getItem("travel-agent-token") || import.meta.env.VITE_ACCESS_TOKEN);
+}
+
+function readSavedText(key: string) {
+  return localStorage.getItem(key) ?? "";
+}
+
+function tripNoteKey(tripId: number) {
+  return `travel-agent-trip-note-${tripId}`;
+}
+
+function personalPreferencesKey(userId: number | null) {
+  return `travel-agent-personal-preferences-${userId ?? "guest"}`;
 }
 
 function shareCodeFromPath() {
@@ -93,6 +108,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>("world");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [requirements, setRequirements] = useState<ApiRequirement[]>([]);
+  const [tripNote, setTripNote] = useState("");
+  const [personalPreferences, setPersonalPreferences] = useState("");
   const [trips, setTrips] = useState<ApiTrip[]>([]);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -128,9 +145,11 @@ function App() {
   const [reviseOpen, setReviseOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideResult, setGuideResult] = useState<{ runId: number; candidates: JsonObject[]; selected: string[] } | null>(null);
-  const [requirementsOpen, setRequirementsOpen] = useState(false);
+  const [tripNotesOpen, setTripNotesOpen] = useState(false);
+  const [personalPreferencesOpen, setPersonalPreferencesOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [dataSheet, setDataSheet] = useState<{ title: string; rows: DataRow[] } | null>(null);
+  const [revisionSheet, setRevisionSheet] = useState<ApiRevision[] | null>(null);
   const [journalSheet, setJournalSheet] = useState<{ workspace: Workspace; highlights: ApiHighlight[] } | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [notice, setNotice] = useState("");
@@ -182,6 +201,8 @@ function App() {
       setRequirements(requirementItems);
       const mappedWorkspace = mapApiWorkspace(detail, members, requirementItems, items.filter((trip) => trip.status === "finished" && trip.id !== selectedTrip.id));
       setWorkspace(mappedWorkspace);
+      setTripNote(readSavedText(tripNoteKey(mappedWorkspace.tripId)));
+      setPersonalPreferences(readSavedText(personalPreferencesKey(user.id)));
       setCreateTripOpen(false);
       return mappedWorkspace;
     } catch (error) {
@@ -293,6 +314,7 @@ function App() {
     setWorkspace(null);
     setTrips([]);
     setAuthUser(null);
+    setPersonalPreferences("");
     setAuthOpen(true);
     setActiveTab("world");
     setTripDetailOpen(false);
@@ -329,6 +351,19 @@ function App() {
     await refreshWorkspace(tripId);
     setTripDetailOpen(true);
     setNotice("已切换旅行");
+  };
+
+  const handleSaveTripNote = (value: string) => {
+    if (!workspace) return;
+    setTripNote(value);
+    localStorage.setItem(tripNoteKey(workspace.tripId), value);
+    setNotice("同行者备注已保存");
+  };
+
+  const handleSavePersonalPreferences = (value: string) => {
+    setPersonalPreferences(value);
+    localStorage.setItem(personalPreferencesKey(authUser?.id ?? null), value);
+    setNotice("旅行偏好与常用信息已保存");
   };
 
   const handleOpenHistory = async (tripId: number) => {
@@ -736,23 +771,6 @@ function App() {
     }
   };
 
-  const handleSaveRequirement = async (contentText: string, sharedSummary: string) => {
-    if (!workspace) return;
-    setLoading(true);
-    try {
-      await api.requirements.saveMine(workspace.tripId, { notes: contentText });
-      if (sharedSummary.trim()) await api.requirements.shareMine(workspace.tripId, sharedSummary.trim());
-      else await api.requirements.unshareMine(workspace.tripId);
-      setRequirementsOpen(false);
-      await refreshWorkspace(workspace.tripId);
-      setNotice("旅行需求已保存");
-    } catch (error) {
-      setNotice(`保存需求失败：${(error as Error).message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleImportGuide = async (text: string) => {
     if (!workspace) return;
     setLoading(true);
@@ -806,6 +824,19 @@ function App() {
       } catch (error) {
         setJournalSheet(null);
         setNotice(`读取旅行手帐失败：${(error as Error).message}`);
+      } finally {
+        setDataLoading(false);
+      }
+      return;
+    }
+    if (label === "行程版本") {
+      setRevisionSheet([]);
+      setDataLoading(true);
+      try {
+        setRevisionSheet(await api.trips.revisions(targetWorkspace.tripId, { pageSize: 200 }));
+      } catch (error) {
+        setRevisionSheet(null);
+        setNotice(`读取历史记录失败：${(error as Error).message}`);
       } finally {
         setDataLoading(false);
       }
@@ -905,7 +936,6 @@ function App() {
     }
   };
 
-  const currentRequirement = requirements.find((item) => item.user_id === authUser?.id);
   const inviteOptions = inviteUsers.filter((user) => user.can_invite).map((user) => ({ ...user, description: user.username }));
 
   const noSelectedTrip = <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先选择行程</h1><p>前往行程列表选择或新建一场旅行。</p><button className="primary-button" onClick={() => { setActiveTab("world"); setTripDetailOpen(false); }}>查看行程列表</button></section></div>;
@@ -916,13 +946,13 @@ function App() {
         : <TripListPage trips={trips} onCreate={() => setCreateTripOpen(true)} onOpenTrip={(tripId) => void handleSelectTrip(tripId)} onOpenHistory={(tripId) => void handleOpenHistory(tripId)} />
       : activeTab === "lobby"
         ? lobbyDetailOpen && workspace
-          ? <LobbyPage workspace={workspace} onBack={() => setLobbyDetailOpen(false)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} onOpenRequirements={() => setRequirementsOpen(true)} />
+          ? <LobbyPage workspace={workspace} tripNote={tripNote} onBack={() => setLobbyDetailOpen(false)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} onOpenTripNotes={() => { setTripNote(readSavedText(tripNoteKey(workspace.tripId))); setTripNotesOpen(true); }} />
           : <LobbyListPage trips={trips} previews={lobbyPreviews} loading={lobbyListLoading} onOpenChat={(tripId) => void handleOpenTripChat(tripId)} onManage={(tripId) => void handleManageLobby(tripId)} />
         : activeTab === "functions"
           ? workspace
             ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
             : noSelectedTrip
-          : <HomePage user={authUser} loading={loading} onOpen={(label) => void openFeature(label)} onUploadAvatar={(file) => void handleUploadAvatar(file)} onChangePassword={() => setPasswordOpen(true)} onLogout={handleLogout} />
+          : <HomePage user={authUser} loading={loading} personalPreferences={personalPreferences} onOpen={(label) => void openFeature(label)} onOpenPreferences={() => { setPersonalPreferences(readSavedText(personalPreferencesKey(authUser.id))); setPersonalPreferencesOpen(true); }} onUploadAvatar={(file) => void handleUploadAvatar(file)} onChangePassword={() => setPasswordOpen(true)} onLogout={handleLogout} />
     : <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先登录</h1><p>登录后读取你的真实行程和协作数据。</p><button className="primary-button" onClick={() => setAuthOpen(true)}>登录或注册</button></section></div>;
 
   return (
@@ -950,17 +980,19 @@ function App() {
       {workspace && generateOpen && <TextActionSheet title={clarifyQuestions.length ? "Agent 还需要确认" : "告诉 Agent 旅行偏好"} label={clarifyQuestions.length ? clarifyQuestions.map((item, index) => `${index + 1}. ${item}`).join("\n") : "偏好、饮食和行动限制"} placeholder={clarifyQuestions.length ? "逐项回答；不限制的项目可以填写“不限”" : "例如：节奏轻松、喜欢博物馆和川菜、有人膝盖不便"} loading={replanLoading} submitText={clarifyQuestions.length ? "回答并继续" : "让 Agent 理解需求"} onSubmit={(value) => void handlePrepareGeneration(value)} onClose={() => setGenerateOpen(false)} required />}
       {workspace && reviseOpen && <TextActionSheet title="整体调整行程" label="你希望怎样修改？" placeholder="例如：降低预算，并把第二天下午改为室内活动" loading={replanLoading} submitText="生成调整候选" onSubmit={(value) => void handleRevise(value)} onClose={() => setReviseOpen(false)} required />}
       {replanActivity && <TextActionSheet title={`调整：${replanActivity.title}`} label="调整要求" placeholder="说明希望保留和改变的内容" loading={replanLoading} submitText="生成局部调整候选" onSubmit={(value) => void handleReplan(value)} onClose={() => setReplanActivity(null)} required />}
-      {workspace && requirementsOpen && <RequirementSheet initialContent={String(currentRequirement?.content?.notes ?? "")} initialSummary={currentRequirement?.shared_summary ?? ""} loading={loading} onSubmit={(content, summary) => void handleSaveRequirement(content, summary)} onClose={() => setRequirementsOpen(false)} />}
+      {workspace && tripNotesOpen && <SaveTextSheet title="同行者的备注" intro="记录这次旅行中同行者的补充说明，便于回看和展示。" label="备注内容" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} />}
       {workspace && guideOpen && <TextActionSheet title="导入攻略" label="粘贴攻略文字" placeholder="粘贴文章、笔记或推荐清单，Agent 会提取候选活动" loading={loading} submitText="提取候选活动" onSubmit={(value) => void handleImportGuide(value)} onClose={() => setGuideOpen(false)} required />}
       {workspace && activityEditor && <ActivityEditorSheet activity={activityEditor.activity} defaultDay={activityEditor.day} defaultOrder={Math.max(0, ...workspace.activities.filter((item) => item.day === activityEditor.day).map((item) => item.order)) + 1} loading={loading} onSubmit={(values) => void handleSaveActivity(values)} onClose={() => setActivityEditor(null)} />}
       {workspace && expenseActivity !== undefined && authUser && <ExpenseSheet activity={expenseActivity ?? undefined} members={workspace.members} currentUserId={authUser.id} loading={loading} onSubmit={(values) => void handleCreateExpense(values)} onClose={() => setExpenseActivity(undefined)} />}
       {workspace && recordActivity !== undefined && <HighlightSheet activity={recordActivity ?? undefined} loading={loading} onSubmit={(title, content, files) => void handleCreateRecord(title, content, files)} onClose={() => setRecordActivity(undefined)} />}
       {workspace && guideResult && <ModalSheet title="选择攻略候选" onClose={() => setGuideResult(null)} wide><div className="candidate-choice-list">{guideResult.candidates.map((candidate) => { const id = String(candidate.candidate_id ?? ""); const checked = guideResult.selected.includes(id); return <label className="candidate-choice" key={id}><input type="checkbox" checked={checked} onChange={() => setGuideResult((current) => current ? { ...current, selected: checked ? current.selected.filter((item) => item !== id) : [...current.selected, id] } : null)} /><span><strong>{String(candidate.title ?? "未命名候选")}</strong><small>{String(candidate.excerpt ?? "")}</small></span></label>; })}</div><button className="primary-button full-button" disabled={!guideResult.selected.length || loading} onClick={() => void handleApplyGuide()}>加入选中的活动</button></ModalSheet>}
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
+      {revisionSheet && <RevisionSheet revisions={revisionSheet} loading={dataLoading} onClose={() => setRevisionSheet(null)} />}
       {journalSheet && <TravelJournalSheet workspace={journalSheet.workspace} highlights={journalSheet.highlights} loading={dataLoading} onClose={() => setJournalSheet(null)} />}
       {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
       {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
+      {personalPreferencesOpen && <SaveTextSheet title="旅行偏好与常用信息" intro="保存你的出行偏好和常用信息，方便自己查看。" label="偏好与常用信息" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}
       {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
       {createTripOpen && authUser && <CreateTripSheet title={workspace ? "新建旅行" : "创建第一场旅行"} closable={Boolean(workspace)} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
       <footer className="build-note">API：{apiConfig.baseUrl}{workspace ? ` · 行程 v${workspace.version}` : ""}</footer>
@@ -971,12 +1003,6 @@ function App() {
 function TextActionSheet({ title, label, placeholder, loading, submitText, required = false, onSubmit, onClose }: { title: string; label: string; placeholder: string; loading: boolean; submitText: string; required?: boolean; onSubmit: (value: string) => void; onClose: () => void }) {
   const [value, setValue] = useState("");
   return <ModalSheet title={title} onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value.trim()); }}><label className="field-label">{label}<textarea className="text-area" value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} required={required} /></label><button className="primary-button full-button" disabled={loading || (required && !value.trim())}>{loading ? "处理中…" : submitText}</button></form></ModalSheet>;
-}
-
-function RequirementSheet({ initialContent, initialSummary, loading, onSubmit, onClose }: { initialContent: string; initialSummary: string; loading: boolean; onSubmit: (content: string, summary: string) => void; onClose: () => void }) {
-  const [content, setContent] = useState(initialContent);
-  const [summary, setSummary] = useState(initialSummary);
-  return <ModalSheet title="我的旅行需求" onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(content.trim(), summary.trim()); }}><p className="sheet-intro">完整需求仅你本人和代填者可见；只有下方共享摘要会展示给同行者。</p><label className="field-label">私密需求<textarea className="text-area" value={content} onChange={(event) => setContent(event.target.value)} placeholder="饮食、体力、作息及其他个人要求" required /></label><label className="field-label">共享摘要<textarea className="text-area compact-text-area" value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="可选；留空代表不向同行者共享" /></label><button className="primary-button full-button" disabled={loading}>{loading ? "保存中…" : "保存需求"}</button></form></ModalSheet>;
 }
 
 export default App;

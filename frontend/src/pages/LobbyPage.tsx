@@ -12,7 +12,7 @@ function MemberCard({ member }: { member: Member }) {
   );
 }
 
-export function LobbyPage({ workspace, onBack, onInvite, onOpenLobby, lobbyUnread, onPrivateChat, onOpenRequirements }: { workspace: Workspace; onBack: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void; onOpenRequirements: () => void }) {
+export function LobbyPage({ workspace, tripNote, onBack, onInvite, onOpenLobby, lobbyUnread, onPrivateChat, onOpenTripNotes }: { workspace: Workspace; tripNote: string; onBack: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void; onOpenTripNotes: () => void }) {
   const dateRange = workspace.startDate && workspace.endDate ? `${workspace.startDate.slice(5).replace("-", "月")}日至${workspace.endDate.slice(5).replace("-", "月")}日` : "日期待定";
   return (
     <div className="page page-lobby">
@@ -24,10 +24,10 @@ export function LobbyPage({ workspace, onBack, onInvite, onOpenLobby, lobbyUnrea
         onBack={onBack}
       />
       <section className="member-grid" aria-label="同行成员">{workspace.members.map((member) => <MemberCard member={member} key={member.id} />)}</section>
-      <button className="shared-card" onClick={onOpenRequirements}>
-        <div className="shared-card-title"><strong>同行者的想法</strong><span>同行者可见</span></div>
-        <p>{workspace.sharedSummary}</p>
-        <small>{workspace.budget} · 已分享 {workspace.sharedCount} 条</small>
+      <button className="shared-card" onClick={onOpenTripNotes}>
+        <div className="shared-card-title"><strong>同行者的备注</strong><span>前端记录</span></div>
+        <p>{tripNote || "记录同行者对这次旅行的补充说明"}</p>
+        <small>{workspace.budget} · 已记录 {tripNote ? 1 : 0} 条</small>
         <ChevronRight className="shared-card-chevron" size={17} />
       </button>
       <button className="list-row discussion-row" onClick={onOpenLobby}>
