@@ -30,7 +30,7 @@ from app.services.boundary_transport import (
 )
 from app.services.generation_planning import compile_generation_draft
 from app.services.itinerary_snapshot import build_itinerary_snapshot
-from app.services.poi_enrichment import enrich_itinerary_pois
+from app.services.poi_enrichment import enrich_itinerary_pois, normalize_poi_search_city
 from app.services.trip_constraints import normalize_pace
 from app.services.trip_location import requires_intercity_transport
 from app.services.trip_validation import enrich_route_checks, validate_trip_rules
@@ -305,6 +305,7 @@ async def generate_initial_itinerary(
                     data = await enrich_itinerary_pois(
                         data,
                         city=trip.city,
+                        city_adcode=trip.city_adcode,
                         origin_city=trip.origin_city,
                         client=amap_client,
                         verified_candidates=poi_candidates,
@@ -394,7 +395,7 @@ async def generate_initial_itinerary(
 
         data, weather_warnings = await enrich_itinerary_weather(
             data,
-            city_code=trip.city,
+            city_code=normalize_poi_search_city(trip.city),
             client=get_qweather_client(),
         )
         integration_warnings.extend({**warning, "degraded": True} for warning in weather_warnings)
@@ -1122,6 +1123,7 @@ async def retry_failed_ai_run(
         data = await enrich_itinerary_pois(
             candidate,
             city=trip.city,
+            city_adcode=trip.city_adcode,
             origin_city=trip.origin_city,
             client=get_amap_client(),
         )
@@ -1521,9 +1523,10 @@ async def _prequery_poi_candidates(
 ) -> tuple[list[dict], list[dict]]:
     candidates: list[dict] = []
     warnings: list[dict] = []
+    search_city = normalize_poi_search_city(city)
     for keyword in ("热门景点", "特色餐厅", "舒适型酒店", "交通枢纽"):
         try:
-            result = await client.search_poi(keyword=keyword, city=city)
+            result = await client.search_poi(keyword=keyword, city=search_city)
         except AppError as exc:
             if not exc.code.startswith("AMAP_"):
                 raise

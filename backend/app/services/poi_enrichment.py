@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
+from app.core.city_scope import canonical_city_adcode, municipality_scope
 from app.integrations.amap import AmapClient
 
 CLOSED_POI_RE = re.compile(
@@ -33,7 +34,7 @@ async def resolve_activity_poi(
     keyword = _clean_poi_keyword(location_name)
     if not keyword:
         return None
-    result = await client.search_poi(keyword=keyword, city=_search_city(city))
+    result = await client.search_poi(keyword=keyword, city=normalize_poi_search_city(city))
     return _pick_poi(
         result.get("items", []),
         keyword,
@@ -48,15 +49,16 @@ async def enrich_itinerary_pois(
     *,
     city: str,
     client: AmapClient,
+    city_adcode: str | None = None,
     origin_city: str | None = None,
     verified_candidates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Replace LLM location guesses with POI data returned by Amap."""
     enriched = deepcopy(data)
     city_info = enriched.setdefault("city", {"name": city})
-    city_info["adcode"] = None
+    city_info["adcode"] = canonical_city_adcode(city_adcode)
     city_info["province"] = None
-    destination_search_city = _search_city(city)
+    destination_search_city = normalize_poi_search_city(city)
     verified_by_id = {
         str(item["poi_id"]): _candidate_as_poi(item)
         for item in (verified_candidates or [])
@@ -89,7 +91,7 @@ async def enrich_itinerary_pois(
                 destination_city=city,
                 origin_city=origin_city,
             )
-            search_city = _search_city(target_area)
+            search_city = normalize_poi_search_city(target_area)
             is_destination_area = search_city == destination_search_city
 
             result: dict[str, Any] = {"items": []}
@@ -250,8 +252,8 @@ def _activity_search_area(
     location = activity.get("location") or {}
     location_name = str(location.get("name") or "") if isinstance(location, dict) else ""
     normalized_location = _normalize_name(location_name)
-    normalized_origin = _normalize_name(_search_city(origin_city))
-    normalized_destination = _normalize_name(_search_city(destination_city))
+    normalized_origin = _normalize_name(normalize_poi_search_city(origin_city))
+    normalized_destination = _normalize_name(normalize_poi_search_city(destination_city))
     if normalized_destination and normalized_destination in normalized_location:
         return destination_city
     if normalized_origin and normalized_origin in normalized_location:
@@ -340,8 +342,11 @@ def _haversine_km(first: tuple[float, float], second: tuple[float, float]) -> fl
     return 2 * 6371.0088 * asin(sqrt(value))
 
 
-def _search_city(value: str) -> str:
+def normalize_poi_search_city(value: str) -> str:
     compact = "".join(value.split())
+    municipality = municipality_scope(compact)
+    if municipality is not None:
+        return municipality[1] if compact.isdigit() else municipality[0]
     if compact.isdigit():
         return compact
     city_matches = re.findall(r"([^省自治区特别行政区]+市)", compact)
@@ -352,11 +357,18 @@ def _search_city(value: str) -> str:
 
 def _is_in_target_area(item: dict[str, Any], target_area: str) -> bool:
     target = "".join(target_area.split())
-    target_city = _search_city(target).removesuffix("市")
+    target_city = normalize_poi_search_city(target).removesuffix("市")
     item_city = str(item.get("city") or "").removesuffix("市")
     if target_city and item_city and target_city != item_city:
         return False
-    district_matches = re.findall(r"([^市省]+(?:区|县|旗))", target)
+    # "北京城区" and "重庆郊县" are legacy whole-city scopes, not
+    # real districts.  Actual scopes such as "北京市东城区" still retain
+    # their district restriction.
+    district_matches = (
+        []
+        if municipality_scope(target) is not None
+        else re.findall(r"([^市省]+(?:区|县|旗))", target)
+    )
     target_district = district_matches[-1] if district_matches else ""
     item_district = str(item.get("district") or "")
     if target_district and item_district and target_district != item_district:

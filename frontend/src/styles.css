@@ -209,6 +209,7 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
 .map-app-option strong { font-size: 15px; font-weight: 500; }
 .map-app-option small { color: var(--muted); font-size: 11px; }
 .map-app-option > svg { color: var(--muted); }
+.map-app-option:disabled { cursor: not-allowed; opacity: .48; }
 .mobile-drawer-handle { display: none; }
 .field-label { white-space: pre-line; }
 .source-note { display: block; margin-top: 4px; color: var(--muted); line-height: 1.45; }

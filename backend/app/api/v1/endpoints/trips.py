@@ -11,6 +11,7 @@ from app.api.dependencies import (
     require_trip_owner,
 )
 from app.api.v1.endpoints.map import get_amap_client
+from app.core.city_scope import canonical_city_selection
 from app.core.errors import AppError, ConflictError, NotFoundError
 from app.db.models import DayActivity, EditConflict, Trip, TripMember, TripRevision
 from app.schemas.activity import ActivityRead
@@ -82,6 +83,12 @@ async def list_trips(
 async def create_trip(
     payload: TripCreate, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[TripRead]:
+    payload.city, payload.city_adcode = canonical_city_selection(
+        payload.city, payload.city_adcode
+    )
+    payload.origin_city, payload.origin_city_adcode = canonical_city_selection(
+        payload.origin_city, payload.origin_city_adcode
+    )
     await _validate_city_selection(payload.city, payload.city_adcode, "city")
     await _validate_city_selection(
         payload.origin_city, payload.origin_city_adcode, "origin_city"
@@ -229,8 +236,14 @@ async def update_trip(
     before = TripRead.model_validate(current_before).model_dump(mode="json")
     values = payload.model_dump(exclude_unset=True, exclude={"version"})
     if "city" in values:
+        values["city"], values["city_adcode"] = canonical_city_selection(
+            values["city"], values["city_adcode"]
+        )
         await _validate_city_selection(values["city"], values["city_adcode"], "city")
     if "origin_city" in values:
+        values["origin_city"], values["origin_city_adcode"] = canonical_city_selection(
+            values["origin_city"], values["origin_city_adcode"]
+        )
         await _validate_city_selection(
             values["origin_city"], values["origin_city_adcode"], "origin_city"
         )

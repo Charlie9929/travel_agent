@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from app.core.city_scope import canonical_city_adcode, canonical_city_selection
 from app.integrations.amap import AmapClient
 from app.schemas.trip import TripCreate
 from app.services.trip_location import requires_intercity_transport
@@ -74,6 +75,7 @@ def test_amap_district_tree_normalizes_cities_and_municipalities() -> None:
                         "name": "北京市",
                         "adcode": "110000",
                         "districts": [
+                            {"name": "北京城区", "adcode": "110100", "level": "city"},
                             {"name": "东城区", "adcode": "110101", "level": "district"}
                         ],
                     },
@@ -92,3 +94,19 @@ def test_amap_district_tree_normalizes_cities_and_municipalities() -> None:
     assert by_adcode["110000"]["cities"] == [
         {"name": "北京市", "adcode": "110000"}
     ]
+
+
+@pytest.mark.parametrize(
+    ("name", "adcode", "expected"),
+    [
+        ("北京城区", "110100", ("北京市", "110000")),
+        ("天津城区", "120100", ("天津市", "120000")),
+        ("上海城区", "310100", ("上海市", "310000")),
+        ("重庆郊县", "500200", ("重庆市", "500000")),
+    ],
+)
+def test_legacy_municipality_selections_are_canonicalized(
+    name: str, adcode: str, expected: tuple[str, str]
+) -> None:
+    assert canonical_city_selection(name, adcode) == expected
+    assert canonical_city_adcode(adcode) == expected[1]

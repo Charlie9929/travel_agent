@@ -136,7 +136,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return payload.data;
 }
 
-const DISTRICT_CACHE_KEY = "travel-agent-districts-v1";
+// v2 invalidates catalogs that exposed synthetic municipality entries such as
+// "北京城区" instead of the directly selectable "北京市".
+const DISTRICT_CACHE_KEY = "travel-agent-districts-v2";
 const DISTRICT_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let districtRequest: Promise<ApiDistrictResult> | null = null;
 

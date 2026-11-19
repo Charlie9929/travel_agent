@@ -66,8 +66,8 @@ const ROUTE_LABELS: Record<RouteMode, string> = {
 };
 const MAP_APPS: { id: MapApp; name: string; description: string }[] = [
   { id: "amap", name: "高德地图", description: "使用高德地图导航" },
-  { id: "baidu", name: "百度地图", description: "使用百度地图导航" },
-  { id: "tencent", name: "腾讯地图", description: "使用腾讯地图导航" },
+  { id: "baidu", name: "百度地图", description: "需已安装百度地图" },
+  { id: "tencent", name: "腾讯地图", description: "使用腾讯地图路线页" },
   { id: "apple", name: "Apple 地图", description: "适用于 Apple 设备" },
 ];
 
@@ -172,14 +172,9 @@ function recommendedMode(segment: Segment): RouteMode | null {
   )[0];
 }
 
-function mapRouteUrl(app: MapApp, activity: Activity, mode: RouteMode) {
+function mapRouteUrl(app: MapApp, activity: Activity, mode: RouteMode): string | null {
   const { latitude: lat, longitude: lng } = activity;
-  const name = encodeURIComponent(activity.location || activity.title);
-  if (lat == null || lng == null) {
-    return app === "apple"
-      ? `https://maps.apple.com/?q=${name}`
-      : `https://uri.amap.com/search?keyword=${name}&src=行伴`;
-  }
+  const locationName = activity.location || activity.title;
   if (app === "baidu") {
     const baiduMode =
       mode === "drive"
@@ -189,20 +184,51 @@ function mapRouteUrl(app: MapApp, activity: Activity, mode: RouteMode) {
           : mode === "bike"
             ? "riding"
             : "walking";
-    return `baidumap://map/direction?destination=latlng:${lat},${lng}|name:${name}&mode=${baiduMode}&src=webapp.行伴`;
+    const params = new URLSearchParams({
+      origin: "我的位置",
+      destination: lat == null || lng == null
+        ? locationName
+        : `name:${locationName}|latlng:${lat},${lng}`,
+      mode: baiduMode,
+      coord_type: "gcj02",
+      src: "webapp.xingban",
+    });
+    return `baidumap://map/direction?${params.toString()}`;
   }
   if (app === "tencent") {
+    // Tencent's public URI route planner currently documents bus, drive and
+    // walk only. Do not silently turn a cycling request into another mode.
+    if (mode === "bike") return null;
     const tencentMode = mode === "drive" ? "drive" : mode === "transit" ? "bus" : mode;
-    return `qqmap://map/routeplan?type=${tencentMode}&to=${name}&tocoord=${lat},${lng}&referer=行伴`;
+    const params = new URLSearchParams({
+      type: tencentMode,
+      to: locationName,
+      coord_type: "2",
+      referer: "xingban",
+    });
+    if (lat != null && lng != null) params.set("tocoord", `${lat},${lng}`);
+    return `https://apis.map.qq.com/uri/v1/routeplan?${params.toString()}`;
   }
   if (app === "apple") {
-    const appleMode =
-      mode === "walk" ? "w" : mode === "transit" ? "r" : mode === "bike" ? "b" : "d";
-    return `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=${appleMode}&q=${name}`;
+    const appleMode = mode === "walk"
+      ? "walking"
+      : mode === "transit"
+        ? "transit"
+        : mode === "bike"
+          ? "cycling"
+          : "driving";
+    // AMap coordinates are GCJ-02 while Apple unified URLs expect their own
+    // location resolution. Use the verified POI name to avoid coordinate drift.
+    const params = new URLSearchParams({ destination: locationName, mode: appleMode });
+    return `https://maps.apple.com/directions?${params.toString()}`;
+  }
+  const name = encodeURIComponent(locationName);
+  if (lat == null || lng == null) {
+    return `https://uri.amap.com/search?keyword=${name}&src=xingban`;
   }
   const amapMode =
     mode === "drive" ? "car" : mode === "transit" ? "bus" : mode === "bike" ? "ride" : "walk";
-  return `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=${amapMode}&policy=1&src=行伴&coordinate=gaode&callnative=1`;
+  return `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=${amapMode}&policy=1&src=xingban&coordinate=gaode&callnative=1`;
 }
 
 function downloadCalendar(workspace: Workspace, activities: Activity[]) {
@@ -1015,21 +1041,30 @@ export function WorldPage({
             将使用{ROUTE_LABELS[navigationTarget.mode]}前往“{navigationTarget.activity.title}”。
           </p>
           <div className="map-app-list">
-            {MAP_APPS.map((app) => (
-              <button
-                className="map-app-option"
-                key={app.id}
-                onClick={() =>
-                  window.location.assign(
-                    mapRouteUrl(app.id, navigationTarget.activity, navigationTarget.mode),
-                  )
-                }
-              >
-                <span><MapPinned size={20} /></span>
-                <span><strong>{app.name}</strong><small>{app.description}</small></span>
-                <ChevronRight size={18} />
-              </button>
-            ))}
+            {MAP_APPS.map((app) => {
+              const routeUrl = mapRouteUrl(
+                app.id,
+                navigationTarget.activity,
+                navigationTarget.mode,
+              );
+              return (
+                <button
+                  className="map-app-option"
+                  disabled={!routeUrl}
+                  key={app.id}
+                  onClick={() => routeUrl && window.location.assign(routeUrl)}
+                >
+                  <span><MapPinned size={20} /></span>
+                  <span>
+                    <strong>{app.name}</strong>
+                    <small>
+                      {routeUrl ? app.description : "腾讯地图网页跳转暂不支持骑行路线"}
+                    </small>
+                  </span>
+                  <ChevronRight size={18} />
+                </button>
+              );
+            })}
           </div>
         </ModalSheet>
       )}

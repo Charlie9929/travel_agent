@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 
+from app.core.city_scope import MUNICIPALITIES, canonical_city_adcode
 from app.core.errors import AppError
 
 
@@ -128,16 +129,24 @@ class AmapClient:
             if not province_name or len(province_adcode) != 6:
                 continue
             children = province.get("districts") or []
-            cities = [
-                {
-                    "name": str(city.get("name") or "").strip(),
-                    "adcode": str(city.get("adcode") or "").strip(),
-                }
-                for city in children
-                if city.get("level") == "city"
-                and str(city.get("name") or "").strip()
-                and len(str(city.get("adcode") or "").strip()) == 6
-            ]
+            # AMap may expose a synthetic city child such as
+            # "北京城区/110100".  That code is unsuitable as the citylimit of
+            # a POI query and can yield results from other provinces.  A direct
+            # municipality is itself the selectable city and must use its
+            # province-level adcode.
+            if province_adcode in {item[1] for item in MUNICIPALITIES.values()}:
+                cities = [{"name": province_name, "adcode": province_adcode}]
+            else:
+                cities = [
+                    {
+                        "name": str(city.get("name") or "").strip(),
+                        "adcode": str(city.get("adcode") or "").strip(),
+                    }
+                    for city in children
+                    if city.get("level") == "city"
+                    and str(city.get("name") or "").strip()
+                    and len(str(city.get("adcode") or "").strip()) == 6
+                ]
             # Municipalities, Hong Kong, Macao and Taiwan may have districts
             # directly below the province level. They are one selectable region.
             if not cities:
@@ -245,6 +254,7 @@ class AmapClient:
                     results[mode] = {"available": False}
 
             if city_code:
+                city_code = canonical_city_adcode(city_code)
                 try:
                     await self._wait_for_rate_slot()
                     response = await client.get(

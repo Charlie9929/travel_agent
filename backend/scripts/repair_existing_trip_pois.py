@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.db.models import DayActivity, Trip, TripRevision
 from app.db.session import AsyncSessionFactory
 from app.integrations.amap import AmapClient
-from app.services.poi_enrichment import _is_in_target_area
+from app.services.poi_enrichment import _is_in_target_area, normalize_poi_search_city
 from app.services.versioning import bump_trip_version
 
 TARGET_TRIP_IDS = (4, 30, 31, 32)
@@ -209,7 +209,9 @@ async def main(*, apply: bool) -> None:
             for activity in activities:
                 trip = trips[activity.trip_id]
                 query = SEARCH_QUERIES[activity.id]
-                result = await client.search_poi(keyword=query, city=trip.city)
+                result = await client.search_poi(
+                    keyword=query, city=normalize_poi_search_city(trip.city)
+                )
                 candidates = [
                     item for item in result.get("items", []) if _is_in_target_area(item, trip.city)
                 ][:5]

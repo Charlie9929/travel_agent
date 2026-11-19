@@ -3,8 +3,8 @@ import pytest
 from app.services.poi_enrichment import (
     _clean_poi_keyword,
     _pick_poi,
-    _search_city,
     enrich_itinerary_pois,
+    normalize_poi_search_city,
     poi_unavailable_reason,
     resolve_activity_poi,
 )
@@ -40,7 +40,7 @@ class StubAmapClient:
 class ManualActivityStubAmapClient:
     async def search_poi(self, *, keyword: str, city: str) -> dict:
         assert keyword == "上海动物园游览"
-        assert city == "上海"
+        assert city == "上海市"
         return {
             "items": [
                 {
@@ -247,8 +247,49 @@ def test_poi_matching_uses_foshan_scope_for_full_district_name() -> None:
         "district": "顺德区",
         "adcode": "440606",
     }
-    assert _search_city("广东省佛山市顺德区") == "佛山"
+    assert normalize_poi_search_city("广东省佛山市顺德区") == "佛山"
     assert _pick_poi([item], "逢简水乡", "广东省佛山市顺德区") == item
+
+
+def test_search_city_normalizes_legacy_municipality_scopes() -> None:
+    assert normalize_poi_search_city("北京城区") == "北京市"
+    assert normalize_poi_search_city("天津城区") == "天津市"
+    assert normalize_poi_search_city("上海城区") == "上海市"
+    assert normalize_poi_search_city("重庆城区") == "重庆市"
+    assert normalize_poi_search_city("重庆郊县") == "重庆市"
+    assert normalize_poi_search_city("110100") == "110000"
+    assert normalize_poi_search_city("440100") == "440100"
+
+
+def test_legacy_municipality_scope_is_not_treated_as_a_district() -> None:
+    airport = {
+        "poi_id": "B000A84PH5",
+        "name": "北京首都国际机场3号航站楼",
+        "city": "北京市",
+        "district": "顺义区",
+        "adcode": "110113",
+    }
+    assert (
+        _pick_poi(
+            [airport],
+            "北京首都国际机场3号航站楼",
+            "北京城区",
+            requested_poi_id="B000A84PH5",
+            expected_type="transport",
+        )
+        == airport
+    )
+
+
+def test_real_municipality_district_scope_is_still_enforced() -> None:
+    shunyi_airport = {
+        "poi_id": "airport",
+        "name": "北京首都国际机场",
+        "city": "北京市",
+        "district": "顺义区",
+        "adcode": "110113",
+    }
+    assert _pick_poi([shunyi_airport], "北京首都国际机场", "北京市东城区") is None
 
 
 def test_transport_matching_distinguishes_metro_station_from_temple() -> None:
