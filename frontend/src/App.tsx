@@ -10,6 +10,8 @@ import { ExpenseSheet, type ExpenseFormValues } from "./components/ExpenseSheet"
 import { HighlightSheet } from "./components/HighlightSheet";
 import { ModalSheet } from "./components/ModalSheet";
 import { PasswordSheet } from "./components/PasswordSheet";
+import { ProcessingLabel } from "./components/ProcessingLabel";
+import { ProcessingSteps } from "./components/ProcessingSteps";
 import { RevisionSheet } from "./components/RevisionSheet";
 import { SaveTextSheet } from "./components/SaveTextSheet";
 import { TripSettingsSheet } from "./components/TripSettingsSheet";
@@ -50,6 +52,8 @@ function tripNoteKey(tripId: number) {
 function personalPreferencesKey(userId: number | null) {
   return `travel-agent-personal-preferences-${userId ?? "guest"}`;
 }
+
+const generationSteps = ["正在读取需求", "正在构思行程", "正在生成计划"];
 
 function shareCodeFromPath() {
   const match = window.location.pathname.match(/^\/join\/([^/]+)$/);
@@ -142,6 +146,7 @@ function App() {
   const [generateOpen, setGenerateOpen] = useState(false);
   const [generationContext, setGenerationContext] = useState("");
   const [clarifyQuestions, setClarifyQuestions] = useState<string[]>([]);
+  const [generationStep, setGenerationStep] = useState(0);
   const [reviseOpen, setReviseOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
   const [guideResult, setGuideResult] = useState<{ runId: number; candidates: JsonObject[]; selected: string[] } | null>(null);
@@ -303,6 +308,21 @@ function App() {
       await refreshWorkspace();
     } catch (error) {
       setAuthError((error as Error).message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (values: { username: string; nickname: string; newPassword: string }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      await api.auth.forgotPassword(values.username.trim(), values.nickname.trim(), values.newPassword);
+      setNotice("密码已重置，请使用新密码登录");
+      return true;
+    } catch (error) {
+      setAuthError((error as Error).message);
+      return false;
     } finally {
       setAuthLoading(false);
     }
@@ -572,7 +592,9 @@ function App() {
     if (!workspace) return;
     setReplanLoading(true);
     try {
+      setGenerationStep(2);
       await api.ai.generate(workspace.tripId, requirementsText || undefined);
+      setGenerationStep(generationSteps.length);
       setGenerateOpen(false);
       await refreshWorkspace(workspace.tripId);
       setNotice("Agent 已生成并保存初始行程");
@@ -587,8 +609,10 @@ function App() {
     if (!workspace) return;
     const combined = [generationContext, clarifyQuestions.length ? `Agent 追问：${clarifyQuestions.join("；")}` : "", answer].filter(Boolean).join("\n");
     setReplanLoading(true);
+    setGenerationStep(0);
     try {
       const result = await api.ai.clarifyPreferences(workspace.tripId, answer, combined);
+      setGenerationStep(1);
       if (!result.ready) {
         setGenerationContext(combined);
         setClarifyQuestions(result.questions);
@@ -977,7 +1001,7 @@ function App() {
         <button className="secondary-button full-button" onClick={() => void handleCopyInvite()}>复制邀请链接</button>
         <small className="invite-link-note">通过链接加入的成员默认为“可编辑”，加入后可在头像处调整。</small>
       </ModalSheet>}
-      {workspace && generateOpen && <TextActionSheet title={clarifyQuestions.length ? "Agent 还需要确认" : "告诉 Agent 旅行偏好"} label={clarifyQuestions.length ? clarifyQuestions.map((item, index) => `${index + 1}. ${item}`).join("\n") : "偏好、饮食和行动限制"} placeholder={clarifyQuestions.length ? "逐项回答；不限制的项目可以填写“不限”" : "例如：节奏轻松、喜欢博物馆和川菜、有人膝盖不便"} loading={replanLoading} submitText={clarifyQuestions.length ? "回答并继续" : "让 Agent 理解需求"} onSubmit={(value) => void handlePrepareGeneration(value)} onClose={() => setGenerateOpen(false)} required />}
+      {workspace && generateOpen && <TextActionSheet title={clarifyQuestions.length ? "Agent 还需要确认" : "告诉 Agent 旅行偏好"} label={clarifyQuestions.length ? clarifyQuestions.map((item, index) => `${index + 1}. ${item}`).join("\n") : "偏好、饮食和行动限制"} placeholder={clarifyQuestions.length ? "逐项回答；不限制的项目可以填写“不限”" : "例如：节奏轻松、喜欢博物馆和川菜、有人膝盖不便"} loading={replanLoading} processingSteps={generationSteps} processingStep={generationStep} submitText={clarifyQuestions.length ? "回答并继续" : "让 Agent 理解需求"} onSubmit={(value) => void handlePrepareGeneration(value)} onClose={() => setGenerateOpen(false)} required />}
       {workspace && reviseOpen && <TextActionSheet title="整体调整行程" label="你希望怎样修改？" placeholder="例如：降低预算，并把第二天下午改为室内活动" loading={replanLoading} submitText="生成调整候选" onSubmit={(value) => void handleRevise(value)} onClose={() => setReviseOpen(false)} required />}
       {replanActivity && <TextActionSheet title={`调整：${replanActivity.title}`} label="调整要求" placeholder="说明希望保留和改变的内容" loading={replanLoading} submitText="生成局部调整候选" onSubmit={(value) => void handleReplan(value)} onClose={() => setReplanActivity(null)} required />}
       {workspace && tripNotesOpen && <SaveTextSheet title="同行者的备注" intro="记录这次旅行中同行者的补充说明，便于回看和展示。" label="备注内容" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} />}
@@ -993,16 +1017,16 @@ function App() {
       {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
       {personalPreferencesOpen && <SaveTextSheet title="旅行偏好与常用信息" intro="保存你的出行偏好和常用信息，方便自己查看。" label="偏好与常用信息" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}
-      {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
+      {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onForgotPassword={handleForgotPassword} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
       {createTripOpen && authUser && <CreateTripSheet title={workspace ? "新建旅行" : "创建第一场旅行"} closable={Boolean(workspace)} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
       <footer className="build-note">API：{apiConfig.baseUrl}{workspace ? ` · 行程 v${workspace.version}` : ""}</footer>
     </AppShell>
   );
 }
 
-function TextActionSheet({ title, label, placeholder, loading, submitText, required = false, onSubmit, onClose }: { title: string; label: string; placeholder: string; loading: boolean; submitText: string; required?: boolean; onSubmit: (value: string) => void; onClose: () => void }) {
+function TextActionSheet({ title, label, placeholder, loading, processingSteps, processingStep = 0, submitText, required = false, onSubmit, onClose }: { title: string; label: string; placeholder: string; loading: boolean; processingSteps?: string[]; processingStep?: number; submitText: string; required?: boolean; onSubmit: (value: string) => void; onClose: () => void }) {
   const [value, setValue] = useState("");
-  return <ModalSheet title={title} onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value.trim()); }}><label className="field-label">{label}<textarea className="text-area" value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} required={required} /></label><button className="primary-button full-button" disabled={loading || (required && !value.trim())}>{loading ? "处理中…" : submitText}</button></form></ModalSheet>;
+  return <ModalSheet title={title} onClose={onClose} wide><form className="auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit(value.trim()); }}><label className="field-label">{label}<textarea className="text-area" value={value} onChange={(event) => setValue(event.target.value)} placeholder={placeholder} required={required} /></label><button className="primary-button full-button" disabled={loading || (required && !value.trim())}>{loading ? <ProcessingLabel /> : submitText}</button>{processingSteps && loading && <ProcessingSteps steps={processingSteps} activeStep={processingStep} />}</form></ModalSheet>;
 }
 
 export default App;

@@ -216,6 +216,7 @@ export const api = {
       refreshDistrictsAfterLogin();
       return { token: result.token, user: mapUser(result.user_info) };
     },
+    forgotPassword: (username: string, nickname: string, newPassword: string) => request<{ reset: boolean }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ username, nickname, new_password: newPassword }) }),
     me: async () => mapUser(await request<ApiUser>("/auth/me")),
     logout: () => localStorage.removeItem("travel-agent-token"),
   },
