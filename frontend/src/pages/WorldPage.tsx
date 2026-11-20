@@ -678,8 +678,9 @@ export function WorldPage({
             <button
               className="action-pill"
               onClick={workspace.activities.length ? onRevise : onGenerate}
+              disabled={!canEditItinerary}
             >
-              {workspace.activities.length ? "整体调整" : "Agent 生成"}
+              {workspace.status === "finished" ? "已归档" : workspace.activities.length ? "整体调整" : "Agent 生成"}
             </button>
             <button
               className="icon-button header-settings-button"
@@ -696,7 +697,7 @@ export function WorldPage({
           <Sparkles size={30} />
           <h2>还没有生成行程</h2>
           <p>让 Agent 根据目的地、日期、预算和成员需求生成第一版行程。</p>
-          <button className="primary-button" onClick={onGenerate}>
+          <button className="primary-button" onClick={onGenerate} disabled={!canEditItinerary}>
             开始生成行程
           </button>
         </section>
@@ -836,9 +837,9 @@ export function WorldPage({
             <div className="schedule-title workbench-schedule-title">
               <strong>第 {selectedDay} 天</strong>
               <span>{currentDay.length} 项活动</span>
-              <button className="inline-action" onClick={() => onAddActivity(selectedDay)}>
+              {canEditItinerary && <button className="inline-action" onClick={() => onAddActivity(selectedDay)}>
                 <Plus size={14} />新增
-              </button>
+              </button>}
             </div>
             <div className="workbench-activity-list">
               {dayStartSegment && renderTransportSummary(dayStartSegment)}
@@ -941,7 +942,7 @@ export function WorldPage({
                         {activity.quotedPriceNote && (
                           <small className="source-note">{activity.quotedPriceNote}</small>
                         )}
-                        <div className="activity-actions">
+                        {canEditItinerary && <div className="activity-actions">
                           <button onClick={(event) => { event.stopPropagation(); onEditActivity(activity); }}>
                             <Pencil size={13} />编辑
                           </button>
@@ -957,7 +958,7 @@ export function WorldPage({
                           <button className="danger-inline" onClick={(event) => { event.stopPropagation(); onDeleteActivity(activity); }}>
                             <Trash2 size={13} />删除
                           </button>
-                        </div>
+                        </div>}
                       </div>
                     </article>
                     {segment && renderTransportSummary(segment)}
@@ -965,7 +966,7 @@ export function WorldPage({
                 );
               })}
               {!currentDay.length && (
-                <button className="secondary-button full-button" onClick={() => onAddActivity(selectedDay)}>
+                <button className="secondary-button full-button" onClick={() => onAddActivity(selectedDay)} disabled={!canEditItinerary}>
                   为这一天添加活动
                 </button>
               )}

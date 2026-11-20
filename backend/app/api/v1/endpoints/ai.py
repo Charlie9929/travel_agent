@@ -4,7 +4,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Request
 from sqlalchemy import select
 
-from app.api.dependencies import CurrentUser, DbSession, require_trip_editor, require_trip_member
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    require_active_trip_editor,
+    require_trip_member,
+)
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError
 from app.db.models import AiRunLog, Trip
@@ -55,7 +60,7 @@ async def clarify_preferences(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, payload.trip_id, current_user.id)
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
     trip = await session.get(Trip, payload.trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
@@ -120,7 +125,7 @@ async def clarify_preferences(
 async def generate(
     payload: GenerateRequest, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, payload.trip_id, current_user.id)
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
     run, result, new_version = await generate_initial_itinerary(
         session=session,
         trip_id=payload.trip_id,
@@ -179,7 +184,7 @@ async def generate(
 async def replan(
     payload: ReplanRequest, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, payload.trip_id, current_user.id)
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
     run, result = await generate_replan_candidate(
         session=session,
         trip_id=payload.trip_id,
@@ -234,7 +239,7 @@ async def replan(
 async def revise(
     payload: ReviseRequest, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, payload.trip_id, current_user.id)
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
     run, result = await generate_revision_candidate(
         session=session,
         trip_id=payload.trip_id,
@@ -312,7 +317,7 @@ async def explain_diff(
 async def import_guide(
     payload: ImportGuideRequest, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, payload.trip_id, current_user.id)
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
     run, result = await generate_guide_candidates(
         session=session,
         trip_id=payload.trip_id,
@@ -340,7 +345,7 @@ async def recognize_guide_image(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     mime_type = (request.headers.get("content-type") or "").split(";", maxsplit=1)[0].lower()
     if mime_type not in GUIDE_IMAGE_TYPES:
         raise AppError(
@@ -371,7 +376,7 @@ async def verify_guide_run(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     run = await session.scalar(
         select(AiRunLog).where(AiRunLog.id == ai_run_id, AiRunLog.trip_id == trip_id)
     )
@@ -422,7 +427,7 @@ async def retry_apply(
     run = await session.scalar(select(AiRunLog).where(AiRunLog.id == ai_run_id))
     if run is None:
         raise NotFoundError("AI 调用记录不存在")
-    await require_trip_editor(session, run.trip_id, current_user.id)
+    await require_active_trip_editor(session, run.trip_id, current_user.id)
     itinerary, new_version = await retry_failed_ai_run(
         session=session, run=run, user_id=current_user.id
     )
@@ -444,7 +449,7 @@ async def apply_ai_run(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     run = await session.scalar(
         select(AiRunLog).where(AiRunLog.id == ai_run_id, AiRunLog.trip_id == trip_id)
     )

@@ -6,8 +6,9 @@ from sqlalchemy import select
 from app.api.dependencies import (
     CurrentUser,
     DbSession,
+    require_active_trip_member,
+    require_active_trip_owner,
     require_trip_member,
-    require_trip_owner,
 )
 from app.core.errors import NotFoundError
 from app.db.models import TravelRequirement, TripMember, User
@@ -130,7 +131,7 @@ async def save_my_requirement(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[RequirementRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     requirement = await _upsert_requirement(
         session,
         trip_id=trip_id,
@@ -157,7 +158,7 @@ async def save_requirement_for_member(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[RequirementRead]:
-    await require_trip_owner(session, trip_id, current_user.id)
+    await require_active_trip_owner(session, trip_id, current_user.id)
     await _require_target_member(session, trip_id, user_id)
     target_user = await session.get(User, user_id)
     if target_user is None:
@@ -187,7 +188,7 @@ async def share_my_requirement(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[RequirementRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     requirement = await session.scalar(
         select(TravelRequirement).where(
             TravelRequirement.trip_id == trip_id,
@@ -222,7 +223,7 @@ async def share_my_requirement(
 async def revoke_my_requirement_share(
     trip_id: int, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict[str, bool]]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     requirement = await session.scalar(
         select(TravelRequirement).where(
             TravelRequirement.trip_id == trip_id,

@@ -2,10 +2,16 @@ from decimal import Decimal
 
 import pytest
 
+from app.api.v1.endpoints.collaboration import _agent_adjustment_requested
 from app.api.v1.endpoints.expenses import _equal_splits, _ratio_splits
 from app.core.errors import AppError
 from app.schemas.collaboration import ExpenseSplitInput
 from app.services.collaboration import candidate_presentation, present_revision_diff
+
+
+def test_agent_question_is_not_misclassified_as_itinerary_adjustment() -> None:
+    assert not _agent_adjustment_requested("@Agent 西湖游船在第几天？")
+    assert _agent_adjustment_requested("@Agent 把西湖游船安排到第二天")
 
 
 def test_equal_split_keeps_cent_total() -> None:

@@ -395,6 +395,10 @@ function App() {
   };
 
   const openGenerateFlow = () => {
+    if (workspace?.status === "finished") {
+      setNotice("旅行已归档，行程内容仅支持查看");
+      return;
+    }
     setGenerationContext("");
     setClarifyQuestions([]);
     setGenerateOpen(true);
@@ -407,8 +411,17 @@ function App() {
     setNotice("已切换旅行");
   };
 
+  const isTripArchived = workspace?.status === "finished";
+  const ensureTripWritable = () => {
+    if (isTripArchived) {
+      setNotice("旅行已归档，内容仅支持查看");
+      return false;
+    }
+    return true;
+  };
+
   const handleSaveTripNote = async (value: string) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     const note = await api.trips.updateCollaborationNote(workspace.tripId, value);
     setTripNote(note.content);
     setNotice("同行者的想法已共享保存");
@@ -429,7 +442,7 @@ function App() {
   };
 
   const isTripOwner = Boolean(workspace && workspace.members.some((member) => member.id === authUser?.id && member.role === "房主"));
-  const canEditItinerary = Boolean(workspace && workspace.members.some((member) => member.id === authUser?.id && member.permission !== "viewer"));
+  const canEditItinerary = Boolean(!isTripArchived && workspace && workspace.members.some((member) => member.id === authUser?.id && member.permission !== "viewer"));
 
   const handleArchiveTrip = async () => {
     if (!workspace || !window.confirm("结束后会保留旅行记录，确认归档这场旅行吗？")) return;
@@ -549,7 +562,7 @@ function App() {
   };
 
   const handleChatSend = async (content: string) => {
-    if (!chatMode || !workspace) return;
+    if (!chatMode || !workspace || !ensureTripWritable()) return;
     setChatLoading(true);
     try {
       if (chatMode === "lobby") {
@@ -623,7 +636,7 @@ function App() {
   };
 
   const handleGenerate = async (requirementsText: string, referenceGuide = "") => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setReplanLoading(true);
     try {
       setGenerationStep(2);
@@ -640,7 +653,7 @@ function App() {
   };
 
   const handlePrepareGeneration = async (answer: string, referenceGuide = "") => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     if (!answer.trim() && referenceGuide.trim() && !clarifyQuestions.length) {
       await handleGenerate("", referenceGuide);
       return;
@@ -669,7 +682,7 @@ function App() {
   };
 
   const handleRevise = async (instruction: string) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setReplanLoading(true);
     try {
       const result = await api.ai.revise({ trip_id: workspace.tripId, changed_constraints: {}, user_instruction: instruction, trip_version: workspace.version });
@@ -683,7 +696,7 @@ function App() {
   };
 
   const handleReplan = async (instruction: string) => {
-    if (!replanActivity || !workspace) return;
+    if (!replanActivity || !workspace || !ensureTripWritable()) return;
     setReplanLoading(true);
     try {
       const result = await api.ai.replan({ trip_id: workspace.tripId, day_number: replanActivity.day, adjustment_requirements: instruction, trip_version: workspace.version, after_time: replanActivity.time === "待定" ? undefined : replanActivity.time });
@@ -697,7 +710,7 @@ function App() {
   };
 
   const handleApplyCandidate = async () => {
-    if (!replanResult || !workspace) return;
+    if (!replanResult || !workspace || !ensureTripWritable()) return;
     setReplanLoading(true);
     try {
       await api.ai.applyRun(workspace.tripId, replanResult.aiRunId, workspace.version);
@@ -723,7 +736,7 @@ function App() {
   };
 
   const handleSaveActivity = async (values: ActivityFormValues) => {
-    if (!workspace || !activityEditor) return;
+    if (!workspace || !activityEditor || !ensureTripWritable()) return;
     setLoading(true);
     try {
       if (activityEditor.activity) {
@@ -753,7 +766,7 @@ function App() {
   };
 
   const handleDeleteActivity = async (activity: Activity) => {
-    if (!workspace || !window.confirm(`确认删除“${activity.title}”吗？该操作会生成版本记录。`)) return;
+    if (!workspace || !ensureTripWritable() || !window.confirm(`确认删除“${activity.title}”吗？该操作会生成版本记录。`)) return;
     setLoading(true);
     try {
       await api.activities.remove(workspace.tripId, activity.id, workspace.version);
@@ -774,7 +787,7 @@ function App() {
   };
 
   const handleReorderActivities = async (dayNumber: number, activityIds: number[]) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setLoading(true);
     try {
       await api.activities.reorder(workspace.tripId, dayNumber, activityIds, workspace.version);
@@ -796,7 +809,7 @@ function App() {
   };
 
   const handleCreateExpense = async (values: ExpenseFormValues) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setLoading(true);
     try {
       await api.expenses.create(workspace.tripId, values);
@@ -810,7 +823,7 @@ function App() {
   };
 
   const handleCreateRecord = async (title: string, content: string, files: File[]) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setLoading(true);
     try {
       const activity = recordActivity || undefined;
@@ -834,7 +847,7 @@ function App() {
   };
 
   const handleImportGuide = async (text: string) => {
-    if (!workspace) return;
+    if (!workspace || !ensureTripWritable()) return;
     setLoading(true);
     try {
       const result = await api.ai.importGuide(workspace.tripId, text);
@@ -850,12 +863,13 @@ function App() {
 
   const handleRecognizeGuideImage = async (file: File) => {
     if (!workspace) throw new Error("请先打开一个行程");
+    if (!ensureTripWritable()) throw new Error("旅行已归档，内容仅支持查看");
     const result = await api.ai.recognizeGuideImage(workspace.tripId, file);
     return result.text;
   };
 
   const handleVerifyGuide = async (placements: GuidePlacement[]) => {
-    if (!workspace || !guideResult) return [];
+    if (!workspace || !guideResult || !ensureTripWritable()) return [];
     setLoading(true);
     try {
       const result = await api.ai.verifyGuideRun(workspace.tripId, guideResult.runId, workspace.version, placements);
@@ -869,7 +883,7 @@ function App() {
   };
 
   const handleApplyGuide = async (placements: GuidePlacement[]) => {
-    if (!workspace || !guideResult || !placements.length) return;
+    if (!workspace || !guideResult || !placements.length || !ensureTripWritable()) return;
     setLoading(true);
     try {
       await api.ai.applyGuideRun(workspace.tripId, guideResult.runId, workspace.version, placements);
@@ -889,6 +903,10 @@ function App() {
       return;
     }
     if (!targetWorkspace) return;
+    if (targetWorkspace.status === "finished" && label === "攻略导入") {
+      setNotice("旅行已归档，内容仅支持查看，不能导入攻略");
+      return;
+    }
     if (label === "和 Agent 聊聊") {
       await openAgentChat(targetWorkspace.tripId);
       return;
@@ -1024,7 +1042,7 @@ function App() {
   const currentPage = authUser
     ? activeTab === "world"
       ? tripDetailOpen && workspace
-        ? <WorldPage workspace={workspace} currentUserId={authUser?.id ?? null} canManageMembers={isTripOwner} canEditItinerary={canEditItinerary} onInviteMember={() => setInviteOpen(true)} onChangeMemberRole={handleChangeMemberRole} onReorderActivities={handleReorderActivities} onBack={() => setTripDetailOpen(false)} onSettings={() => setTripSettingsOpen(true)} onReplan={setReplanActivity} onGenerate={openGenerateFlow} onRevise={() => setReviseOpen(true)} onOpenVersions={() => void openFeature("行程版本")} onAddActivity={(day) => setActivityEditor({ day })} onEditActivity={(activity) => setActivityEditor({ activity, day: activity.day })} onDeleteActivity={(activity) => void handleDeleteActivity(activity)} onAddExpense={(activity) => setExpenseActivity(activity)} onAddRecord={(activity) => setRecordActivity(activity)} />
+        ? <WorldPage workspace={workspace} currentUserId={authUser?.id ?? null} canManageMembers={!isTripArchived && isTripOwner} canEditItinerary={canEditItinerary} onInviteMember={() => setInviteOpen(true)} onChangeMemberRole={handleChangeMemberRole} onReorderActivities={handleReorderActivities} onBack={() => setTripDetailOpen(false)} onSettings={() => setTripSettingsOpen(true)} onReplan={setReplanActivity} onGenerate={openGenerateFlow} onRevise={() => setReviseOpen(true)} onOpenVersions={() => void openFeature("行程版本")} onAddActivity={(day) => setActivityEditor({ day })} onEditActivity={(activity) => setActivityEditor({ activity, day: activity.day })} onDeleteActivity={(activity) => void handleDeleteActivity(activity)} onAddExpense={(activity) => setExpenseActivity(activity)} onAddRecord={(activity) => setRecordActivity(activity)} />
         : <TripListPage trips={trips} onCreate={() => setCreateTripOpen(true)} onOpenTrip={(tripId) => void handleSelectTrip(tripId)} onOpenHistory={(tripId) => void handleOpenHistory(tripId)} />
       : activeTab === "lobby"
         ? lobbyDetailOpen && workspace
@@ -1062,7 +1080,7 @@ function App() {
       {workspace && generateOpen && <GenerationInputSheet questions={clarifyQuestions} loading={replanLoading} processingSteps={generationSteps} processingStep={generationStep} onRecognize={handleRecognizeGuideImage} onSubmit={(answer, guideText) => void handlePrepareGeneration(answer, guideText)} onClose={() => setGenerateOpen(false)} />}
       {workspace && reviseOpen && <TextActionSheet title="整体调整行程" label="你希望怎样修改？" placeholder="例如：降低预算，并把第二天下午改为室内活动" loading={replanLoading} submitText="生成调整候选" onSubmit={(value) => void handleRevise(value)} onClose={() => setReviseOpen(false)} required />}
       {replanActivity && <TextActionSheet title={`调整：${replanActivity.title}`} label="调整要求" placeholder="说明希望保留和改变的内容" loading={replanLoading} submitText="生成局部调整候选" onSubmit={(value) => void handleReplan(value)} onClose={() => setReplanActivity(null)} required />}
-      {workspace && tripNotesOpen && <SaveTextSheet title="同行者的想法" intro="同一行程的成员都可以查看、编辑和保存；这些内容不会作为 Agent 的输入。" label="想法与备注" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} />}
+      {workspace && tripNotesOpen && <SaveTextSheet title="同行者的想法" intro="同一行程的成员都可以查看、编辑和保存；这些内容不会作为 Agent 的输入。" label="想法与备注" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} readOnly={isTripArchived} />}
       {workspace && guideOpen && <GuideImportSheet loading={loading} onRecognize={handleRecognizeGuideImage} onSubmit={(value) => void handleImportGuide(value)} onClose={() => setGuideOpen(false)} />}
       {workspace && activityEditor && <ActivityEditorSheet activity={activityEditor.activity} defaultDay={activityEditor.day} defaultOrder={Math.max(0, ...workspace.activities.filter((item) => item.day === activityEditor.day).map((item) => item.order)) + 1} loading={loading} onSubmit={(values) => void handleSaveActivity(values)} onClose={() => setActivityEditor(null)} />}
       {workspace && expenseActivity !== undefined && authUser && <ExpenseSheet activity={expenseActivity ?? undefined} members={workspace.members} currentUserId={authUser.id} loading={loading} onSubmit={(values) => void handleCreateExpense(values)} onClose={() => setExpenseActivity(undefined)} />}
@@ -1071,7 +1089,7 @@ function App() {
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
       {revisionSheet && <RevisionSheet revisions={revisionSheet} loading={dataLoading} onClose={() => setRevisionSheet(null)} />}
       {journalSheet && <TravelJournalSheet workspace={journalSheet.workspace} highlights={journalSheet.highlights} loading={dataLoading} onClose={() => setJournalSheet(null)} />}
-      {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
+      {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} readOnly={isTripArchived} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
       {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
       {personalPreferencesOpen && <SaveTextSheet title="旅行备忘录" intro="保存你想留下的旅行备忘内容，方便自己查看。" label="备忘内容" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}

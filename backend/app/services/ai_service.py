@@ -1359,18 +1359,14 @@ def _complete_system_fields(data: dict, trip: Trip) -> dict:
     meta["date_start"] = trip.start_date.isoformat()
     meta["date_end"] = trip.end_date.isoformat()
     meta["traveler_count"] = trip.traveler_count or 1
-    meta["budget_total"] = {
-        "amount": float(trip.total_budget or 0),
-        "currency": "CNY",
-        "price_type": "estimate",
-        "source": "manual",
-    }
-    if isinstance(meta.get("budget_total"), (int, float)):
+    if trip.total_budget is None or trip.total_budget <= 0:
+        meta["budget_total"] = None
+    else:
         meta["budget_total"] = {
-            "amount": meta["budget_total"],
+            "amount": float(trip.total_budget),
             "currency": "CNY",
             "price_type": "estimate",
-            "source": "llm",
+            "source": "manual",
         }
     completed.setdefault("days", [])
     completed.setdefault(
@@ -1510,12 +1506,16 @@ def _generation_constraints(trip: Trip) -> dict:
         "date_start": trip.start_date.isoformat(),
         "date_end": trip.end_date.isoformat(),
         "traveler_count": trip.traveler_count or 1,
-        "budget_total": {
-            "amount": float(trip.total_budget or 0),
-            "currency": "CNY",
-            "price_type": "estimate",
-            "source": "manual",
-        },
+        "budget_total": (
+            {
+                "amount": float(trip.total_budget),
+                "currency": "CNY",
+                "price_type": "estimate",
+                "source": "manual",
+            }
+            if trip.total_budget is not None and trip.total_budget > 0
+            else None
+        ),
         "preferences": [str(item) for item in preference_items],
         "pace": normalize_pace(constraints.get("pace")),
         "party_type": constraints.get("party_type"),

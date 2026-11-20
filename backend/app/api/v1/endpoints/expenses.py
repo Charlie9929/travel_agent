@@ -4,7 +4,12 @@ from decimal import ROUND_HALF_UP, Decimal
 from fastapi import APIRouter, Query
 from sqlalchemy import delete, select
 
-from app.api.dependencies import CurrentUser, DbSession, require_trip_member
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    require_active_trip_member,
+    require_trip_member,
+)
 from app.core.errors import AppError, NotFoundError
 from app.db.models import DayActivity, Expense, ExpenseSplit, TripMember, User
 from app.schemas.collaboration import (
@@ -214,7 +219,7 @@ async def create_expense(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[ExpenseRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     users = await _member_users(session, trip_id)
     if payload.payer_id not in users:
         raise AppError("INVALID_EXPENSE_MEMBER", "付款人必须是行程成员", status_code=422)
@@ -250,7 +255,7 @@ async def update_expense(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[ExpenseRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     expense = await session.scalar(
         select(Expense).where(Expense.id == expense_id, Expense.trip_id == trip_id)
     )
@@ -301,7 +306,7 @@ async def update_expense(
 async def delete_expense(
     trip_id: int, expense_id: int, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict[str, bool]]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     expense = await session.scalar(
         select(Expense).where(Expense.id == expense_id, Expense.trip_id == trip_id)
     )
@@ -372,7 +377,7 @@ async def mark_expenses_settled(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict[str, object]]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     statement = select(Expense).where(Expense.trip_id == trip_id)
     if payload.expense_ids:
         statement = statement.where(Expense.id.in_(payload.expense_ids))

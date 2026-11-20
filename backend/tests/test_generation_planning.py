@@ -94,6 +94,19 @@ def test_explicit_transport_replaces_generic_inter_activity_gaps() -> None:
     assert meal["time_slot"] == {"start": "12:00", "end": "13:30"}
 
 
+def test_missing_budget_keeps_realistic_activity_costs_without_zero_budget() -> None:
+    trip = _trip()
+    trip.total_budget = None
+
+    itinerary = compile_generation_draft(_valid_draft(), trip)  # type: ignore[arg-type]
+
+    assert itinerary["meta"]["budget_total"] is None
+    assert itinerary["cost_summary"]["total_estimate"]["amount"] == 260
+    assert itinerary["cost_summary"]["budget_status"] is None
+    assert itinerary["cost_summary"]["over_by"] is None
+    validate_itinerary(itinerary)
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected_code"),
     [

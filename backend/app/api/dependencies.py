@@ -6,9 +6,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import AppError, ForbiddenError, NotFoundError
+from app.core.errors import AppError, ForbiddenError, NotFoundError, TripArchivedError
 from app.core.security import decode_access_token
-from app.db.models import TripMember, User
+from app.db.models import Trip, TripMember, User
 from app.db.session import get_db_session
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -54,6 +54,36 @@ async def require_trip_editor(session: AsyncSession, trip_id: int, user_id: int)
     membership = await get_membership(session, trip_id, user_id)
     if membership.role not in {"owner", "editor"}:
         raise ForbiddenError("当前成员只有查看权限")
+    return membership
+
+
+async def require_active_trip_member(
+    session: AsyncSession, trip_id: int, user_id: int
+) -> TripMember:
+    membership = await get_membership(session, trip_id, user_id)
+    trip = await session.get(Trip, trip_id)
+    if trip is None:
+        raise NotFoundError("行程不存在")
+    if trip.status == "finished":
+        raise TripArchivedError()
+    return membership
+
+
+async def require_active_trip_editor(
+    session: AsyncSession, trip_id: int, user_id: int
+) -> TripMember:
+    membership = await require_active_trip_member(session, trip_id, user_id)
+    if membership.role not in {"owner", "editor"}:
+        raise ForbiddenError("当前成员只有查看权限")
+    return membership
+
+
+async def require_active_trip_owner(
+    session: AsyncSession, trip_id: int, user_id: int
+) -> TripMember:
+    membership = await require_active_trip_member(session, trip_id, user_id)
+    if membership.role != "owner":
+        raise ForbiddenError("只有行程创建者可以执行该操作")
     return membership
 
 

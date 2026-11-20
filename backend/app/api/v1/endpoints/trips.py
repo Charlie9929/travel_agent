@@ -6,7 +6,8 @@ from sqlalchemy import delete, select, update
 from app.api.dependencies import (
     CurrentUser,
     DbSession,
-    require_trip_editor,
+    require_active_trip_editor,
+    require_active_trip_member,
     require_trip_member,
     require_trip_owner,
 )
@@ -265,7 +266,7 @@ async def update_collaboration_note(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[CollaborationNoteRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     trip = await session.get(Trip, trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
@@ -313,7 +314,7 @@ async def validate_trip(
 async def update_trip(
     trip_id: int, payload: TripUpdate, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[TripRead]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     current_before = await session.get(Trip, trip_id)
     if current_before is None:
         raise NotFoundError("行程不存在")

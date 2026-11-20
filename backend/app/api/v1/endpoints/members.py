@@ -5,8 +5,13 @@ from fastapi import APIRouter
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.dependencies import CurrentUser, DbSession, require_trip_member, require_trip_owner
-from app.core.errors import AppError, ForbiddenError, NotFoundError
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    require_active_trip_owner,
+    require_trip_member,
+)
+from app.core.errors import AppError, ForbiddenError, NotFoundError, TripArchivedError
 from app.db.models import TravelRequirement, Trip, TripMember, TripRevision, User
 from app.schemas.common import ApiResponse
 from app.schemas.member import (
@@ -71,7 +76,7 @@ async def invite_member(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[MemberRead]:
-    await require_trip_owner(session, trip_id, current_user.id)
+    await require_active_trip_owner(session, trip_id, current_user.id)
     if await session.get(User, payload.user_id) is None:
         raise NotFoundError("被邀请用户不存在")
     member = TripMember(trip_id=trip_id, user_id=payload.user_id, role=payload.role)
@@ -117,7 +122,7 @@ async def update_member_role(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict[str, bool]]:
-    await require_trip_owner(session, trip_id, current_user.id)
+    await require_active_trip_owner(session, trip_id, current_user.id)
     if user_id == current_user.id:
         raise ForbiddenError("owner 不能修改自己的角色")
     member = await session.scalar(
@@ -158,7 +163,7 @@ async def update_member_role(
 async def remove_member(
     trip_id: int, user_id: int, session: DbSession, current_user: CurrentUser
 ) -> ApiResponse[dict[str, bool]]:
-    await require_trip_owner(session, trip_id, current_user.id)
+    await require_active_trip_owner(session, trip_id, current_user.id)
     if user_id == current_user.id:
         raise ForbiddenError("owner 不能移除自己")
     member = await session.scalar(
@@ -233,7 +238,7 @@ async def create_share_code(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[ShareCodeResult]:
-    await require_trip_owner(session, trip_id, current_user.id)
+    await require_active_trip_owner(session, trip_id, current_user.id)
     trip = await session.get(Trip, trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
@@ -265,6 +270,8 @@ async def lookup_share_code(share_code: str, session: DbSession) -> ApiResponse[
     trip = await session.scalar(select(Trip).where(Trip.share_code == share_code))
     if trip is None:
         raise NotFoundError("分享码不存在")
+    if trip.status == "finished":
+        raise TripArchivedError()
     if trip.share_code_expires_at is None or trip.share_code_expires_at <= datetime.now(UTC):
         raise AppError("SHARE_CODE_EXPIRED", "分享码已过期", status_code=410)
     return ApiResponse(
@@ -286,6 +293,8 @@ async def join_trip(
     trip = await session.scalar(select(Trip).where(Trip.share_code == payload.share_code))
     if trip is None:
         raise NotFoundError("分享码不存在")
+    if trip.status == "finished":
+        raise TripArchivedError()
     if trip.share_code_expires_at is None or trip.share_code_expires_at <= datetime.now(UTC):
         raise AppError("SHARE_CODE_EXPIRED", "分享码已过期", status_code=410)
     member = TripMember(trip_id=trip.id, user_id=current_user.id, role="editor")

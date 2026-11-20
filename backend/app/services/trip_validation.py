@@ -175,7 +175,8 @@ def validate_trip_rules(
         total_amount += day_amount
         by_day_amount.append({"day_index": day_index, "amount": day_amount})
 
-    budget = data.get("meta", {}).get("budget_total", {}).get("amount")
+    budget_total = data.get("meta", {}).get("budget_total")
+    budget = budget_total.get("amount") if isinstance(budget_total, dict) else None
     if isinstance(budget, (int, float)) and budget > 0 and total_amount > float(budget):
         errors.append(
             {

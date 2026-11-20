@@ -27,6 +27,11 @@ class ForbiddenError(AppError):
         super().__init__("FORBIDDEN", message, status_code=403)
 
 
+class TripArchivedError(AppError):
+    def __init__(self) -> None:
+        super("TRIP_ARCHIVED", "旅行已归档，当前内容仅支持查看", status_code=403)
+
+
 class ConflictError(AppError):
     def __init__(self, message: str, detail: Any | None = None) -> None:
         super().__init__("VERSION_CONFLICT", message, status_code=409, detail=detail)

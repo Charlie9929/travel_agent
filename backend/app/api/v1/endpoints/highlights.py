@@ -4,7 +4,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Query, Request
 from sqlalchemy import select
 
-from app.api.dependencies import CurrentUser, DbSession, require_trip_member
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    require_active_trip_member,
+    require_trip_member,
+)
 from app.core.config import get_settings
 from app.core.errors import AppError, ForbiddenError, NotFoundError
 from app.db.models import DayActivity, TripHighlight, TripHighlightMedia
@@ -126,7 +131,7 @@ async def create_highlight(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[HighlightRead]:
-    await require_trip_member(session, trip_id, current_user.id)
+    await require_active_trip_member(session, trip_id, current_user.id)
     await _validate_activity(session, trip_id, payload.activity_id)
     highlight = TripHighlight(
         trip_id=trip_id,
@@ -147,7 +152,7 @@ async def update_highlight(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[HighlightRead]:
-    membership = await require_trip_member(session, trip_id, current_user.id)
+    membership = await require_active_trip_member(session, trip_id, current_user.id)
     highlight = await _trip_highlight(session, trip_id, highlight_id)
     _require_edit_permission(highlight, current_user.id, membership.role)
     if "activity_id" in payload.model_fields_set:
@@ -166,7 +171,7 @@ async def delete_highlight(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict[str, bool]]:
-    membership = await require_trip_member(session, trip_id, current_user.id)
+    membership = await require_active_trip_member(session, trip_id, current_user.id)
     highlight = await _trip_highlight(session, trip_id, highlight_id)
     _require_edit_permission(highlight, current_user.id, membership.role)
     images = list(
@@ -198,7 +203,7 @@ async def upload_highlight_image(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[HighlightMediaRead]:
-    membership = await require_trip_member(session, trip_id, current_user.id)
+    membership = await require_active_trip_member(session, trip_id, current_user.id)
     highlight = await _trip_highlight(session, trip_id, highlight_id)
     _require_edit_permission(highlight, current_user.id, membership.role)
     images = list(
@@ -265,7 +270,7 @@ async def reorder_highlight_images(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[list[HighlightMediaRead]]:
-    membership = await require_trip_member(session, trip_id, current_user.id)
+    membership = await require_active_trip_member(session, trip_id, current_user.id)
     highlight = await _trip_highlight(session, trip_id, highlight_id)
     _require_edit_permission(highlight, current_user.id, membership.role)
     images = list(
@@ -305,7 +310,7 @@ async def delete_highlight_image(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict[str, bool]]:
-    membership = await require_trip_member(session, trip_id, current_user.id)
+    membership = await require_active_trip_member(session, trip_id, current_user.id)
     highlight = await _trip_highlight(session, trip_id, highlight_id)
     _require_edit_permission(highlight, current_user.id, membership.role)
     image = await session.scalar(

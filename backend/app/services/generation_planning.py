@@ -335,8 +335,12 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
             }
         )
 
-    budget = float(trip.total_budget or 0)
-    if budget > 0 and total_cost > budget:
+    budget = (
+        float(trip.total_budget)
+        if trip.total_budget is not None and trip.total_budget > 0
+        else None
+    )
+    if budget is not None and total_cost > budget:
         errors.append(
             _error(
                 "cost_summary.total_estimate",
@@ -360,12 +364,16 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
             "date_start": trip.start_date.isoformat(),
             "date_end": trip.end_date.isoformat(),
             "traveler_count": trip.traveler_count or 1,
-            "budget_total": {
-                "amount": budget,
-                "currency": "CNY",
-                "price_type": "estimate",
-                "source": "manual",
-            },
+            "budget_total": (
+                {
+                    "amount": budget,
+                    "currency": "CNY",
+                    "price_type": "estimate",
+                    "source": "manual",
+                }
+                if budget is not None
+                else None
+            ),
             "preferences": _string_list(preference_items),
             "pace": normalize_pace(constraints.get("pace")),
             "party_type": constraints.get("party_type"),
@@ -382,8 +390,10 @@ def compile_generation_draft(raw: dict[str, Any], trip: Trip) -> dict[str, Any]:
                 "source": "llm",
             },
             "by_day": [],
-            "budget_status": "within" if budget <= 0 or total_cost <= budget else "over",
-            "over_by": max(total_cost - budget, 0) if budget > 0 else 0,
+            "budget_status": (
+                None if budget is None else ("within" if total_cost <= budget else "over")
+            ),
+            "over_by": None if budget is None else max(total_cost - budget, 0),
         },
         "revisions": [],
         "candidates": [],

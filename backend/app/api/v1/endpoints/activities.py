@@ -4,7 +4,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Query
 from sqlalchemy import select
 
-from app.api.dependencies import CurrentUser, DbSession, require_trip_editor, require_trip_member
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    require_active_trip_editor,
+    require_trip_member,
+)
 from app.api.v1.endpoints.map import get_amap_client
 from app.core.errors import AppError, NotFoundError
 from app.db.models import DayActivity, Trip, TripRevision
@@ -255,7 +260,7 @@ async def create_activity(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     trip = await session.get(Trip, trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
@@ -352,7 +357,7 @@ async def update_activity(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     trip = await session.get(Trip, trip_id)
     if trip is None:
         raise NotFoundError("行程不存在")
@@ -479,7 +484,7 @@ async def delete_activity(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     activity = await session.scalar(
         select(DayActivity).where(DayActivity.id == activity_id, DayActivity.trip_id == trip_id)
     )
@@ -525,7 +530,7 @@ async def reorder_activities(
     session: DbSession,
     current_user: CurrentUser,
 ) -> ApiResponse[dict]:
-    await require_trip_editor(session, trip_id, current_user.id)
+    await require_active_trip_editor(session, trip_id, current_user.id)
     activities = list(
         (
             await session.scalars(

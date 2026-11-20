@@ -78,7 +78,11 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
         }
         for index in day_numbers
     ]
-    budget_amount = float(trip.total_budget or 0)
+    budget_amount = (
+        float(trip.total_budget)
+        if trip.total_budget is not None and trip.total_budget > 0
+        else None
+    )
     preferences = trip.preferences if isinstance(trip.preferences, dict) else {}
     constraints = trip.constraints if isinstance(trip.constraints, dict) else {}
     return {
@@ -93,7 +97,7 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
             "date_start": trip.start_date.isoformat(),
             "date_end": trip.end_date.isoformat(),
             "traveler_count": trip.traveler_count or 1,
-            "budget_total": _money(budget_amount, source="manual"),
+            "budget_total": _money(budget_amount, source="manual") if budget_amount else None,
             "preferences": _string_list(preferences),
             "pace": normalize_pace(constraints.get("pace")),
             "party_type": constraints.get("party_type"),
@@ -129,8 +133,14 @@ async def build_itinerary_snapshot(session: AsyncSession, trip_id: int) -> dict[
                 }
                 for day in days
             ],
-            "budget_status": "within" if total_estimate <= Decimal(str(budget_amount)) else "over",
-            "over_by": max(float(total_estimate) - budget_amount, 0),
+            "budget_status": (
+                None
+                if budget_amount is None
+                else ("within" if total_estimate <= Decimal(str(budget_amount)) else "over")
+            ),
+            "over_by": (
+                None if budget_amount is None else max(float(total_estimate) - budget_amount, 0)
+            ),
         },
         "revisions": [_revision_to_agent(item) for item in revisions],
         "candidates": [],

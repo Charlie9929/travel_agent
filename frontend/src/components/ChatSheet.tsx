@@ -14,6 +14,7 @@ export function ChatSheet({
   onClose,
   title,
   currentUser,
+  readOnly = false,
 }: {
   mode: "lobby" | "agent";
   lobbyMessages: LobbyMessage[];
@@ -25,6 +26,7 @@ export function ChatSheet({
   onClose: () => void;
   title?: string;
   currentUser: AuthUser;
+  readOnly?: boolean;
 }) {
   const [content, setContent] = useState("");
   const isLobby = mode === "lobby";
@@ -32,7 +34,7 @@ export function ChatSheet({
 
   return (
     <ModalSheet title={title ?? (isLobby ? "大厅讨论" : "和 Agent 私聊")} onClose={onClose} wide>
-      <div className="chat-toolbar"><span>{isLobby ? "同行者可见 · @Agent 会结合最近 30 条公开消息生成候选" : "仅你和 Agent 可见 · 调整需求会生成候选"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
+      <div className="chat-toolbar"><span>{readOnly ? "旅行已归档 · 仅支持查看" : isLobby ? "同行者可见 · @Agent 可回答行程问题，也可生成调整候选" : "仅你和 Agent 可见 · 可询问行程或生成调整候选"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
       <div className="chat-list" aria-live="polite">
         {messages.length === 0 && <div className="empty-chat">还没有消息，发起第一条对话吧。</div>}
         {isLobby ? lobbyMessages.map((message) => {
@@ -47,10 +49,10 @@ export function ChatSheet({
           return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className="chat-avatar is-agent"><Bot size={18} /></span>}<article className={`chat-bubble ${mine ? "is-user" : "is-agent"}`}><strong>{mine ? "我" : "Agent"}</strong><p>{message.content || (message.status === "pending" ? "正在思考…" : "暂无内容")}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看并确认调整建议</button>}{applied && !mine && <small className="candidate-applied">已应用到行程</small>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
         })}
       </div>
-      <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (content.trim()) { onSend(content.trim()); setContent(""); } }}>
-        <input className="text-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder={isLobby ? "输入消息，@Agent 请求建议" : "告诉 Agent 你的私密需求，例如过敏信息"} disabled={loading} />
+      {readOnly ? <div className="empty-chat">旅行已归档，聊天内容仅支持查看。</div> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (content.trim()) { onSend(content.trim()); setContent(""); } }}>
+        <input className="text-input" value={content} onChange={(event) => setContent(event.target.value)} placeholder={isLobby ? "输入消息，@Agent 可询问或请求调整" : "告诉 Agent 你的私密需求，例如过敏信息"} disabled={loading} />
         <button className="send-button" disabled={loading || !content.trim()} aria-label="发送"><Send size={18} /></button>
-      </form>
+      </form>}
     </ModalSheet>
   );
 }

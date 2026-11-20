@@ -72,8 +72,11 @@
           "maximum": 20
         },
         "budget_total": {
-          "$ref": "#/$defs/money",
-          "description": "预算总额；若用户表达为「人均」，由需求理解模块换算为总额并在解析结果中标注"
+          "oneOf": [
+            { "$ref": "#/$defs/money" },
+            { "type": "null" }
+          ],
+          "description": "预算总额；null 表示用户未设置预算上限，不表示零元行程"
         },
         "preferences": {
           "type": "array",

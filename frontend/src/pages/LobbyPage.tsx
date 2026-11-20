@@ -13,6 +13,7 @@ function MemberCard({ member }: { member: Member }) {
 }
 
 export function LobbyPage({ workspace, tripNote, onBack, onInvite, onOpenLobby, lobbyUnread, onPrivateChat, onOpenTripNotes }: { workspace: Workspace; tripNote: string; onBack: () => void; onInvite: () => void; onOpenLobby: () => void; lobbyUnread: number; onPrivateChat: () => void; onOpenTripNotes: () => void }) {
+  const archived = workspace.status === "finished";
   const dateRange = workspace.startDate && workspace.endDate ? `${workspace.startDate.slice(5).replace("-", "月")}日至${workspace.endDate.slice(5).replace("-", "月")}日` : "日期待定";
   return (
     <div className="page page-lobby">
@@ -20,7 +21,7 @@ export function LobbyPage({ workspace, tripNote, onBack, onInvite, onOpenLobby, 
       <PageHeader
         title={workspace.title}
         subtitle={`${workspace.city} · ${dateRange} · ${workspace.travelerCount}人`}
-        action={<button className="icon-button" onClick={onInvite} aria-label="邀请同行者"><Plus size={24} /></button>}
+        action={!archived ? <button className="icon-button" onClick={onInvite} aria-label="邀请同行者"><Plus size={24} /></button> : undefined}
         onBack={onBack}
       />
       <section className="member-grid" aria-label="同行成员">{workspace.members.map((member) => <MemberCard member={member} key={member.id} />)}</section>
