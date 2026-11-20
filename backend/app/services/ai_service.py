@@ -85,9 +85,7 @@ REALITY_REPAIR_INSTRUCTION = """
 """.strip()
 
 
-def _repair_opening_hours_order(
-    planning_draft: dict, repair_errors: list[dict]
-) -> dict | None:
+def _repair_opening_hours_order(planning_draft: dict, repair_errors: list[dict]) -> dict | None:
     """Move a closing-time-limited activity before a preceding flexible stop."""
     repaired = deepcopy(planning_draft)
     days = repaired.get("days")
@@ -196,6 +194,7 @@ async def generate_initial_itinerary(
     trip_id: int,
     user_id: int,
     additional_requirements: str | None,
+    reference_guide: str | None = None,
 ) -> tuple[AiRunLog, LLMResult, int]:
     settings = get_settings()
     trip = await session.scalar(select(Trip).where(Trip.id == trip_id))
@@ -220,6 +219,7 @@ async def generate_initial_itinerary(
             "constraints": constraints,
             "poi_candidates": poi_candidates,
             "additional_requirements": additional_requirements,
+            "reference_guide": reference_guide,
         },
         status="running",
     )
@@ -238,6 +238,13 @@ async def generate_initial_itinerary(
             "constraints": constraints,
             "poi_candidates": poi_candidates,
             "additional_requirements": additional_requirements,
+            "reference_guide": reference_guide,
+            "reference_guide_instruction": (
+                "攻略仅作为用户偏好与地点线索；请结合日期、预算、营业时间、真实交通和高德候选"
+                "筛选可行内容，不要机械照搬，也不要编造攻略中没有的信息。"
+                if reference_guide
+                else None
+            ),
             "fallback_instruction": (
                 "若 poi_candidates 为空或不足，只能提出高德可检索的具体真实地点，"
                 "poi_id 填 null 交给系统查证；禁止任何占位地点。"
@@ -625,9 +632,7 @@ async def generate_replan_candidate(
                             repair_system_prompt += f"\n\n{RAW_JSON_RETRY_INSTRUCTION}"
                         result = await llm_client.generate_json(
                             system_prompt=repair_system_prompt,
-                            user_prompt=json.dumps(
-                                repair_payload, ensure_ascii=False, default=str
-                            ),
+                            user_prompt=json.dumps(repair_payload, ensure_ascii=False, default=str),
                             schema={},
                             model=settings.deepseek_model,
                             prompt_version=prompt_version,

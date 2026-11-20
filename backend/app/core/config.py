@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     qweather_retries: int = 2
     qweather_cache_ttl_seconds: float = 600.0
 
+    baidu_ocr_base_url: str = "https://aip.baidubce.com"
+    baidu_ocr_api_key: str = ""
+    baidu_ocr_secret_key: str = ""
+    baidu_ocr_timeout_seconds: float = 20.0
+
     upload_dir: str = "uploads"
 
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])

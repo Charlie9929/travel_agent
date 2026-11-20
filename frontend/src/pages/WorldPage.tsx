@@ -849,7 +849,7 @@ export function WorldPage({
                 const priceLabel =
                   activity.actualPrice != null
                     ? activity.priceSource === "amap"
-                      ? `${activity.type === "sight" ? "高德景点消费参考（非门票）" : "高德人均参考"} ¥${activity.actualPrice}${activity.priceQueriedAt ? ` · ${formatQueryTime(activity.priceQueriedAt)}查询` : ""}`
+                      ? `高德人均参考 ¥${activity.actualPrice}${activity.priceQueriedAt ? ` · ${formatQueryTime(activity.priceQueriedAt)}查询` : ""}`
                       : `人工记录 ¥${activity.actualPrice}`
                     : activity.estimatedPrice != null
                       ? `AI 估算 ¥${activity.estimatedPrice}`

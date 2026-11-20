@@ -1,13 +1,14 @@
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession, require_trip_editor, require_trip_member
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError
 from app.db.models import AiRunLog, Trip
+from app.integrations.ocr import get_baidu_ocr_client
 from app.schemas.ai import (
     ApplyAiRunRequest,
     ClarifyPreferencesRequest,
@@ -16,6 +17,7 @@ from app.schemas.ai import (
     ImportGuideRequest,
     ReplanRequest,
     ReviseRequest,
+    VerifyGuideCandidatesRequest,
 )
 from app.schemas.common import ApiResponse
 from app.services.ai_service import (
@@ -33,11 +35,18 @@ from app.services.collaboration import (
     record_agent_event,
     record_agent_workflow,
 )
-from app.services.guide_import_service import apply_guide_candidates, generate_guide_candidates
+from app.services.guide_import_service import (
+    apply_guide_candidates,
+    generate_guide_candidates,
+    verify_guide_candidates,
+)
 from app.services.trip_constraints import normalize_constraints
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 trip_ai_router = APIRouter(prefix="/trips/{trip_id}/ai-runs", tags=["ai"])
+
+GUIDE_IMAGE_TYPES = {"image/jpeg", "image/png"}
+MAX_GUIDE_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 @router.post("/clarify-preferences", response_model=ApiResponse[dict])
@@ -117,6 +126,7 @@ async def generate(
         trip_id=payload.trip_id,
         user_id=current_user.id,
         additional_requirements=payload.additional_requirements,
+        reference_guide=payload.reference_guide,
     )
     queue_system_message(
         session,
@@ -135,6 +145,8 @@ async def generate(
     )
     if payload.additional_requirements:
         trip_brief += f"补充要求：{payload.additional_requirements}"
+    if payload.reference_guide:
+        trip_brief += "用户还上传了攻略作为本次生成的参考。"
     await record_agent_workflow(
         session,
         trip_id=payload.trip_id,
@@ -321,6 +333,65 @@ async def import_guide(
     )
 
 
+@router.post("/import-guide/ocr", response_model=ApiResponse[dict])
+async def recognize_guide_image(
+    trip_id: int,
+    request: Request,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[dict]:
+    await require_trip_editor(session, trip_id, current_user.id)
+    mime_type = (request.headers.get("content-type") or "").split(";", maxsplit=1)[0].lower()
+    if mime_type not in GUIDE_IMAGE_TYPES:
+        raise AppError(
+            "UNSUPPORTED_GUIDE_IMAGE_TYPE",
+            "攻略截图仅支持 JPEG 和 PNG 图片",
+            status_code=415,
+        )
+    image = await request.body()
+    if not image:
+        raise AppError("EMPTY_GUIDE_IMAGE", "攻略截图内容不能为空", status_code=422)
+    if len(image) > MAX_GUIDE_IMAGE_BYTES:
+        raise AppError("GUIDE_IMAGE_TOO_LARGE", "单张攻略截图不能超过 5MB", status_code=413)
+    lines = await get_baidu_ocr_client().recognize(image)
+    return ApiResponse(
+        data={
+            "text": "\n".join(lines),
+            "line_count": len(lines),
+            "provider": "baidu_ocr",
+        }
+    )
+
+
+@trip_ai_router.post("/{ai_run_id}/verify-guide", response_model=ApiResponse[dict])
+async def verify_guide_run(
+    trip_id: int,
+    ai_run_id: int,
+    payload: VerifyGuideCandidatesRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[dict]:
+    await require_trip_editor(session, trip_id, current_user.id)
+    run = await session.scalar(
+        select(AiRunLog).where(AiRunLog.id == ai_run_id, AiRunLog.trip_id == trip_id)
+    )
+    if run is None:
+        raise NotFoundError("AI 调用记录不存在")
+    candidates = await verify_guide_candidates(
+        session=session,
+        run=run,
+        trip_version=payload.trip_version,
+        placements=[item.model_dump() for item in payload.placements],
+    )
+    return ApiResponse(
+        data={
+            "ai_run_id": run.id,
+            "candidates": candidates,
+            "placements": [item.model_dump() for item in payload.placements],
+        }
+    )
+
+
 @router.get("/runs/{ai_run_id}", response_model=ApiResponse[dict])
 async def get_run(
     ai_run_id: int, session: DbSession, current_user: CurrentUser
@@ -391,7 +462,7 @@ async def apply_ai_run(
             run=run,
             user_id=current_user.id,
             trip_version=payload.trip_version,
-            selected_candidate_ids=payload.selected_candidate_ids,
+            placements=[item.model_dump() for item in payload.guide_placements],
         )
         queue_system_message(
             session,
@@ -421,11 +492,15 @@ async def apply_ai_run(
         user_id=current_user.id,
         trip_version=payload.trip_version,
     )
+    candidate_summary = str((run.candidate_output or {}).get("summary") or "").strip()
+    applied_message = f"{current_user.nickname} 应用了 Agent 调整"
+    if candidate_summary:
+        applied_message = f"{applied_message}：{candidate_summary}"
     queue_system_message(
         session,
         trip_id=trip_id,
         event_type="ai_itinerary_applied",
-        content=f"{current_user.nickname} 确认并应用了 Agent 的行程调整",
+        content=applied_message,
         data={"ai_run_id": run.id, "trip_version": new_version, "run_type": run.run_type},
     )
     await record_agent_event(

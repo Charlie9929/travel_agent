@@ -196,7 +196,9 @@ async def generate_chat_reply(
     return "Agent 已收到问题，但未能生成可展示的回复。"
 
 
-def present_revision_diff(diff_content: dict[str, Any]) -> dict[str, Any]:
+def present_revision_diff(
+    diff_content: dict[str, Any], *, resource_type: str | None = None, action: str | None = None
+) -> dict[str, Any]:
     before = diff_content.get("before")
     after = diff_content.get("after")
     changes: list[dict[str, Any]] = []
@@ -209,9 +211,47 @@ def present_revision_diff(diff_content: dict[str, Any]) -> dict[str, Any]:
     elif before != after and (before is not None or after is not None):
         changes.append({"field": "value", "before": before, "after": after})
 
-    source = diff_content.get("source")
-    if source:
-        summary = f"由 {source} 产生的行程修改"
+    explicit_summary = diff_content.get("summary")
+    if isinstance(explicit_summary, str) and explicit_summary.strip():
+        summary = explicit_summary.strip()
+    elif resource_type == "activity" and action == "create":
+        title = after.get("title") if isinstance(after, dict) else None
+        summary = f"新增活动“{title}”" if title else "新增了一项行程活动"
+    elif resource_type == "activity" and action == "update":
+        title = after.get("title") if isinstance(after, dict) else None
+        summary = f"调整活动“{title}”" if title else "调整了一项行程活动"
+    elif resource_type == "activity" and action == "delete":
+        title = before.get("title") if isinstance(before, dict) else None
+        summary = f"删除活动“{title}”" if title else "删除了一项行程活动"
+    elif resource_type == "activity" and action == "reorder":
+        day_number = diff_content.get("day_number")
+        summary = f"调整了第 {day_number} 天的活动顺序和时间"
+    elif resource_type == "trip" and changes:
+        labels = {
+            "title": "旅行名称",
+            "city": "目的地",
+            "origin_city": "出发地",
+            "start_date": "出发日期",
+            "end_date": "结束日期",
+            "total_budget": "预算",
+            "traveler_count": "出行人数",
+            "status": "行程状态",
+        }
+        names = [labels[item["field"]] for item in changes if item["field"] in labels]
+        summary = f"修改了{'、'.join(names)}" if names else "更新了行程基本信息"
+    elif resource_type == "member":
+        member = after if isinstance(after, dict) else before if isinstance(before, dict) else {}
+        nickname = member.get("nickname") or member.get("username") or "同行成员"
+        verb = "添加了" if action == "create" else "移除了" if action == "delete" else "调整了"
+        summary = f"{verb}{nickname}的成员信息"
+    elif diff_content.get("source"):
+        source_labels = {
+            "ai_generate": "Agent 生成了初始行程",
+            "ai_replan": "Agent 生成了局部调整",
+            "ai_revise": "Agent 生成了整体调整",
+            "guide_import": "将攻略候选加入了行程",
+        }
+        summary = source_labels.get(str(diff_content["source"]), "行程内容发生变化")
     elif before is None and after is not None:
         summary = "新增内容"
     elif before is not None and after is None:

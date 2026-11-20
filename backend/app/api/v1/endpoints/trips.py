@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Query
 from sqlalchemy import delete, select, update
@@ -13,10 +13,12 @@ from app.api.dependencies import (
 from app.api.v1.endpoints.map import get_amap_client
 from app.core.city_scope import canonical_city_selection
 from app.core.errors import AppError, ConflictError, NotFoundError
-from app.db.models import DayActivity, EditConflict, Trip, TripMember, TripRevision
+from app.db.models import DayActivity, EditConflict, Trip, TripMember, TripRevision, User
 from app.schemas.activity import ActivityRead
 from app.schemas.common import ApiResponse
 from app.schemas.trip import (
+    CollaborationNoteRead,
+    CollaborationNoteUpdate,
     TripCreate,
     TripDayRead,
     TripDeleteRequest,
@@ -174,10 +176,26 @@ async def list_trip_revisions(
     if resource_id is not None:
         statement = statement.where(TripRevision.resource_id == resource_id)
     revisions = list((await session.scalars(statement)).all())
+    users: dict[int, User] = {}
+    if revisions:
+        user_ids = {item.user_id for item in revisions}
+        users = {
+            user.id: user
+            for user in (await session.scalars(select(User).where(User.id.in_(user_ids)))).all()
+        }
     return ApiResponse(
         data=[
             TripRevisionRead.model_validate(item).model_copy(
-                update=present_revision_diff(item.diff_content)
+                update={
+                    **present_revision_diff(
+                        item.diff_content,
+                        resource_type=item.resource_type,
+                        action=item.action,
+                    ),
+                    "user_nickname": users.get(item.user_id).nickname
+                    if users.get(item.user_id)
+                    else None,
+                }
             )
             for item in revisions
         ]
@@ -197,9 +215,75 @@ async def get_trip_revision(
     )
     if revision is None:
         raise NotFoundError("修改记录不存在")
+    user = await session.get(User, revision.user_id)
     return ApiResponse(
         data=TripRevisionRead.model_validate(revision).model_copy(
-            update=present_revision_diff(revision.diff_content)
+            update={
+                **present_revision_diff(
+                    revision.diff_content,
+                    resource_type=revision.resource_type,
+                    action=revision.action,
+                ),
+                "user_nickname": user.nickname if user else None,
+            }
+        )
+    )
+
+
+@router.get("/{trip_id}/collaboration-note", response_model=ApiResponse[CollaborationNoteRead])
+async def get_collaboration_note(
+    trip_id: int, session: DbSession, current_user: CurrentUser
+) -> ApiResponse[CollaborationNoteRead]:
+    await require_trip_member(session, trip_id, current_user.id)
+    trip = await session.get(Trip, trip_id)
+    if trip is None:
+        raise NotFoundError("行程不存在")
+    extra = trip.extra if isinstance(trip.extra, dict) else {}
+    note = extra.get("collaboration_note")
+    if not isinstance(note, dict):
+        note = {}
+    updated_by = await session.get(User, note.get("updated_by")) if note.get("updated_by") else None
+    updated_at = None
+    if note.get("updated_at"):
+        try:
+            updated_at = datetime.fromisoformat(str(note["updated_at"]))
+        except ValueError:
+            updated_at = None
+    return ApiResponse(
+        data=CollaborationNoteRead(
+            content=str(note.get("content") or ""),
+            updated_by_nickname=updated_by.nickname if updated_by else None,
+            updated_at=updated_at,
+        )
+    )
+
+
+@router.put("/{trip_id}/collaboration-note", response_model=ApiResponse[CollaborationNoteRead])
+async def update_collaboration_note(
+    trip_id: int,
+    payload: CollaborationNoteUpdate,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[CollaborationNoteRead]:
+    await require_trip_member(session, trip_id, current_user.id)
+    trip = await session.get(Trip, trip_id)
+    if trip is None:
+        raise NotFoundError("行程不存在")
+    updated_at = datetime.now(UTC)
+    trip.extra = {
+        **(trip.extra if isinstance(trip.extra, dict) else {}),
+        "collaboration_note": {
+            "content": payload.content.strip(),
+            "updated_by": current_user.id,
+            "updated_at": updated_at.isoformat(),
+        },
+    }
+    await session.commit()
+    return ApiResponse(
+        data=CollaborationNoteRead(
+            content=payload.content.strip(),
+            updated_by_nickname=current_user.nickname,
+            updated_at=updated_at,
         )
     )
 
@@ -292,11 +376,23 @@ async def update_trip(
             },
         )
     )
+    field_labels = {
+        "title": "行程名称",
+        "city": "目的地",
+        "origin_city": "出发地",
+        "start_date": "开始日期",
+        "end_date": "结束日期",
+        "total_budget": "预算",
+        "status": "行程状态",
+        "constraints": "旅行要求",
+    }
+    changed_fields = [field_labels[key] for key in values if key in field_labels]
+    change_summary = "、".join(changed_fields) if changed_fields else "行程基本信息"
     queue_system_message(
         session,
         trip_id=trip_id,
         event_type="trip_changed",
-        content=f"{current_user.nickname} 更新了行程基本信息",
+        content=f"{current_user.nickname} 更新了{change_summary}",
         data={"trip_version": trip.version},
     )
     await session.commit()

@@ -7,6 +7,9 @@ import { ChatSheet } from "./components/ChatSheet";
 import { CreateTripSheet, type CreateTripValues } from "./components/CreateTripSheet";
 import { DataSheet, type DataRow } from "./components/DataSheet";
 import { ExpenseSheet, type ExpenseFormValues } from "./components/ExpenseSheet";
+import { GuideImportSheet } from "./components/GuideImportSheet";
+import { GenerationInputSheet } from "./components/GenerationInputSheet";
+import { GuideCandidateSheet, type GuidePlacement } from "./components/GuideCandidateSheet";
 import { HighlightSheet } from "./components/HighlightSheet";
 import { ModalSheet } from "./components/ModalSheet";
 import { PasswordSheet } from "./components/PasswordSheet";
@@ -43,10 +46,6 @@ function hasToken() {
 
 function readSavedText(key: string) {
   return localStorage.getItem(key) ?? "";
-}
-
-function tripNoteKey(tripId: number) {
-  return `travel-agent-trip-note-${tripId}`;
 }
 
 function personalPreferencesKey(userId: number | null) {
@@ -90,7 +89,7 @@ function versionConflictDetail(error: unknown) {
   };
 }
 
-function generationErrorMessage(error: unknown) {
+function specificErrorMessage(error: unknown) {
   if (!(error instanceof ApiError)) return (error as Error).message;
   const detail = error.detail && typeof error.detail === "object"
     ? error.detail as Record<string, unknown>
@@ -98,14 +97,45 @@ function generationErrorMessage(error: unknown) {
   const validation = detail.validation_errors && typeof detail.validation_errors === "object"
     ? detail.validation_errors as Record<string, unknown>
     : detail;
-  const groups = [validation.errors, validation.route_errors, validation.poi_issues]
+  const groups = [
+    Array.isArray(validation) ? validation : [],
+    validation.errors,
+    validation.route_errors,
+    validation.poi_issues,
+  ]
     .filter(Array.isArray)
     .flat() as Record<string, unknown>[];
-  const messages = groups
-    .map((item) => String(item.message || ""))
-    .filter(Boolean)
-    .slice(0, 3);
-  return messages.length ? `${error.message}：${messages.join("；")}` : error.message;
+  const categories = [
+    { label: "时间安排冲突", codes: /^(TIME_|INVALID_TIME|DAY_SCHEDULE_OVERFLOW|DAY_TOO_LONG|ROUTE_TIME_INFEASIBLE|DATE_)/ },
+    { label: "营业时间冲突", codes: /^(OUTSIDE_OPEN_HOURS|OPEN_HOURS_NO_FIT)/ },
+    { label: "预算超出", codes: /^BUDGET_EXCEEDED$/ },
+    { label: "报价信息不完整", codes: /^(COST_REQUIRED|INVALID_COST|QUOTED_PRICE_)/ },
+    { label: "地点校验失败", codes: /^(LOCATION_|POI_|CITY_MISMATCH|UNTRUSTED_POI_ID|PLACEHOLDER_LOCATION)/ },
+    { label: "路线校验失败", codes: /^(ROUTE_|AMAP_|BOUNDARY_|UNSUPPORTED_INTERCITY_MODE)/ },
+    { label: "用餐安排缺失", codes: /^MISSING_LUNCH$/ },
+    { label: "行程内容不完整", codes: /^(EMPTY_GENERATED_DAY|DAYS_REQUIRED|DAY_COUNT_MISMATCH|DAY_INDEX_MISMATCH)/ },
+    { label: "Agent 输出格式错误", codes: /^(SUMMARY_|PROPOSED_|DIFF_|DRAFT_|MISSING_FIELD|UNEXPECTED_FIELD|INVALID_ACTIVITY|ACTIVITY_NOT_OBJECT|DAY_NOT_OBJECT|DUPLICATE_ACTIVITY)/ },
+  ];
+  for (const category of categories) {
+    const messages = groups
+      .filter((item) => category.codes.test(String(item.code || "")))
+      .map((item) => String(item.message || ""))
+      .filter((message, index, items) => Boolean(message) && items.indexOf(message) === index)
+      .slice(0, 2);
+    if (messages.length) return `${category.label}：${messages.join("；")}`;
+  }
+  for (const category of categories) {
+    if (category.codes.test(error.code)) return `${category.label}：${error.message}`;
+  }
+  const providerLabels: Record<string, string> = {
+    AGENT_LLM_TIMEOUT: "Agent 服务超时，请稍后重试",
+    AGENT_LLM_UNAVAILABLE: "Agent 服务暂时不可用",
+    AGENT_RATE_LIMIT: "Agent 请求过于频繁，请稍后重试",
+    AGENT_QUOTA_EXCEEDED: "Agent 账户额度不足",
+    AGENT_OUTPUT_INVALID: "Agent 返回的行程格式不符合要求",
+    VERSION_CONFLICT: "行程已被其他成员更新，请刷新后重试",
+  };
+  return providerLabels[error.code] || error.message;
 }
 
 function App() {
@@ -149,7 +179,7 @@ function App() {
   const [generationStep, setGenerationStep] = useState(0);
   const [reviseOpen, setReviseOpen] = useState(false);
   const [guideOpen, setGuideOpen] = useState(false);
-  const [guideResult, setGuideResult] = useState<{ runId: number; candidates: JsonObject[]; selected: string[] } | null>(null);
+  const [guideResult, setGuideResult] = useState<{ runId: number; candidates: JsonObject[] } | null>(null);
   const [tripNotesOpen, setTripNotesOpen] = useState(false);
   const [personalPreferencesOpen, setPersonalPreferencesOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -198,15 +228,16 @@ function App() {
         return null;
       }
       localStorage.setItem("travel-agent-selected-trip", String(selectedTrip.id));
-      const [detail, members, requirementItems] = await Promise.all([
+      const [detail, members, requirementItems, collaborationNote] = await Promise.all([
         api.trips.get(selectedTrip.id),
         api.members.list(selectedTrip.id),
         api.requirements.list(selectedTrip.id),
+        api.trips.collaborationNote(selectedTrip.id),
       ]);
       setRequirements(requirementItems);
       const mappedWorkspace = mapApiWorkspace(detail, members, requirementItems, items.filter((trip) => trip.status === "finished" && trip.id !== selectedTrip.id));
       setWorkspace(mappedWorkspace);
-      setTripNote(readSavedText(tripNoteKey(mappedWorkspace.tripId)));
+      setTripNote(collaborationNote.content);
       setPersonalPreferences(readSavedText(personalPreferencesKey(user.id)));
       setCreateTripOpen(false);
       return mappedWorkspace;
@@ -244,12 +275,15 @@ function App() {
       if (inFlight) return;
       inFlight = true;
       try {
-        const [detail, members, requirementItems] = await Promise.all([
+        const [detail, members, requirementItems, collaborationNote] = await Promise.all([
           api.trips.get(workspace.tripId),
           api.members.list(workspace.tripId),
           api.requirements.list(workspace.tripId),
+          api.trips.collaborationNote(workspace.tripId),
         ]);
-        if (cancelled || detail.version === workspace.version) return;
+        if (cancelled) return;
+        setTripNote(collaborationNote.content);
+        if (detail.version === workspace.version) return;
         const mapped = mapApiWorkspace(detail, members, requirementItems, trips.filter((trip) => trip.status === "finished" && trip.id !== detail.id));
         setRequirements(requirementItems);
         setTrips((items) => items.map((trip) => trip.id === detail.id ? { ...trip, ...detail } : trip));
@@ -373,17 +407,17 @@ function App() {
     setNotice("已切换旅行");
   };
 
-  const handleSaveTripNote = (value: string) => {
+  const handleSaveTripNote = async (value: string) => {
     if (!workspace) return;
-    setTripNote(value);
-    localStorage.setItem(tripNoteKey(workspace.tripId), value);
-    setNotice("同行者备注已保存");
+    const note = await api.trips.updateCollaborationNote(workspace.tripId, value);
+    setTripNote(note.content);
+    setNotice("同行者的想法已共享保存");
   };
 
   const handleSavePersonalPreferences = (value: string) => {
     setPersonalPreferences(value);
     localStorage.setItem(personalPreferencesKey(authUser?.id ?? null), value);
-    setNotice("旅行偏好与常用信息已保存");
+    setNotice("旅行备忘录已保存");
   };
 
   const handleOpenHistory = async (tripId: number) => {
@@ -588,25 +622,29 @@ function App() {
     }
   };
 
-  const handleGenerate = async (requirementsText: string) => {
+  const handleGenerate = async (requirementsText: string, referenceGuide = "") => {
     if (!workspace) return;
     setReplanLoading(true);
     try {
       setGenerationStep(2);
-      await api.ai.generate(workspace.tripId, requirementsText || undefined);
+      await api.ai.generate(workspace.tripId, requirementsText || undefined, referenceGuide || undefined);
       setGenerationStep(generationSteps.length);
       setGenerateOpen(false);
       await refreshWorkspace(workspace.tripId);
       setNotice("Agent 已生成并保存初始行程");
     } catch (error) {
-      setNotice(`生成行程失败：${generationErrorMessage(error)}`);
+      setNotice(`生成行程失败：${specificErrorMessage(error)}`);
     } finally {
       setReplanLoading(false);
     }
   };
 
-  const handlePrepareGeneration = async (answer: string) => {
+  const handlePrepareGeneration = async (answer: string, referenceGuide = "") => {
     if (!workspace) return;
+    if (!answer.trim() && referenceGuide.trim() && !clarifyQuestions.length) {
+      await handleGenerate("", referenceGuide);
+      return;
+    }
     const combined = [generationContext, clarifyQuestions.length ? `Agent 追问：${clarifyQuestions.join("；")}` : "", answer].filter(Boolean).join("\n");
     setReplanLoading(true);
     setGenerationStep(0);
@@ -622,7 +660,7 @@ function App() {
         await api.trips.update(workspace.tripId, { constraints: result.structured_constraints, version: workspace.version });
         await refreshWorkspace(workspace.tripId);
       }
-      await handleGenerate(result.summary || combined);
+      await handleGenerate(result.summary || combined, referenceGuide);
     } catch (error) {
       setNotice(`偏好理解失败：${(error as Error).message}`);
     } finally {
@@ -638,7 +676,7 @@ function App() {
       setReviseOpen(false);
       setReplanResult(candidateFromResponse(result));
     } catch (error) {
-      setNotice(`生成整体修订失败：${(error as Error).message}`);
+      setNotice(`生成整体修订失败：${specificErrorMessage(error)}`);
     } finally {
       setReplanLoading(false);
     }
@@ -652,7 +690,7 @@ function App() {
       setReplanActivity(null);
       setReplanResult(result);
     } catch (error) {
-      setNotice(`生成调整建议失败：${(error as Error).message}`);
+      setNotice(`生成调整建议失败：${specificErrorMessage(error)}`);
     } finally {
       setReplanLoading(false);
     }
@@ -678,7 +716,7 @@ function App() {
         setReplanResult(null);
         await refreshWorkspace(tripId);
         setNotice("已在最新版上应用 Agent 调整");
-      })) setNotice(`应用调整失败：${(error as Error).message}`);
+      })) setNotice(`应用调整失败：${specificErrorMessage(error)}`);
     } finally {
       setReplanLoading(false);
     }
@@ -802,7 +840,7 @@ function App() {
       const result = await api.ai.importGuide(workspace.tripId, text);
       const candidates = Array.isArray(result.candidates) ? result.candidates as JsonObject[] : [];
       setGuideOpen(false);
-      setGuideResult({ runId: Number(result.ai_run_id), candidates, selected: [] });
+      setGuideResult({ runId: Number(result.ai_run_id), candidates });
     } catch (error) {
       setNotice(`攻略导入失败：${(error as Error).message}`);
     } finally {
@@ -810,11 +848,31 @@ function App() {
     }
   };
 
-  const handleApplyGuide = async () => {
-    if (!workspace || !guideResult?.selected.length) return;
+  const handleRecognizeGuideImage = async (file: File) => {
+    if (!workspace) throw new Error("请先打开一个行程");
+    const result = await api.ai.recognizeGuideImage(workspace.tripId, file);
+    return result.text;
+  };
+
+  const handleVerifyGuide = async (placements: GuidePlacement[]) => {
+    if (!workspace || !guideResult) return [];
     setLoading(true);
     try {
-      await api.ai.applyGuideRun(workspace.tripId, guideResult.runId, workspace.version, guideResult.selected);
+      const result = await api.ai.verifyGuideRun(workspace.tripId, guideResult.runId, workspace.version, placements);
+      return result.candidates;
+    } catch (error) {
+      setNotice(`攻略地点校验失败：${specificErrorMessage(error)}`);
+      throw error;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApplyGuide = async (placements: GuidePlacement[]) => {
+    if (!workspace || !guideResult || !placements.length) return;
+    setLoading(true);
+    try {
+      await api.ai.applyGuideRun(workspace.tripId, guideResult.runId, workspace.version, placements);
       setGuideResult(null);
       await refreshWorkspace(workspace.tripId);
       setNotice("已将选中的攻略条目加入行程");
@@ -970,7 +1028,7 @@ function App() {
         : <TripListPage trips={trips} onCreate={() => setCreateTripOpen(true)} onOpenTrip={(tripId) => void handleSelectTrip(tripId)} onOpenHistory={(tripId) => void handleOpenHistory(tripId)} />
       : activeTab === "lobby"
         ? lobbyDetailOpen && workspace
-          ? <LobbyPage workspace={workspace} tripNote={tripNote} onBack={() => setLobbyDetailOpen(false)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} onOpenTripNotes={() => { setTripNote(readSavedText(tripNoteKey(workspace.tripId))); setTripNotesOpen(true); }} />
+          ? <LobbyPage workspace={workspace} tripNote={tripNote} onBack={() => setLobbyDetailOpen(false)} onInvite={() => setInviteOpen(true)} onOpenLobby={() => void openLobby()} lobbyUnread={lobbyUnread} onPrivateChat={() => void openAgentChat()} onOpenTripNotes={() => setTripNotesOpen(true)} />
           : <LobbyListPage trips={trips} previews={lobbyPreviews} loading={lobbyListLoading} onOpenChat={(tripId) => void handleOpenTripChat(tripId)} onManage={(tripId) => void handleManageLobby(tripId)} />
         : activeTab === "functions"
           ? workspace
@@ -1001,22 +1059,22 @@ function App() {
         <button className="secondary-button full-button" onClick={() => void handleCopyInvite()}>复制邀请链接</button>
         <small className="invite-link-note">通过链接加入的成员默认为“可编辑”，加入后可在头像处调整。</small>
       </ModalSheet>}
-      {workspace && generateOpen && <TextActionSheet title={clarifyQuestions.length ? "Agent 还需要确认" : "告诉 Agent 旅行偏好"} label={clarifyQuestions.length ? clarifyQuestions.map((item, index) => `${index + 1}. ${item}`).join("\n") : "偏好、饮食和行动限制"} placeholder={clarifyQuestions.length ? "逐项回答；不限制的项目可以填写“不限”" : "例如：节奏轻松、喜欢博物馆和川菜、有人膝盖不便"} loading={replanLoading} processingSteps={generationSteps} processingStep={generationStep} submitText={clarifyQuestions.length ? "回答并继续" : "让 Agent 理解需求"} onSubmit={(value) => void handlePrepareGeneration(value)} onClose={() => setGenerateOpen(false)} required />}
+      {workspace && generateOpen && <GenerationInputSheet questions={clarifyQuestions} loading={replanLoading} processingSteps={generationSteps} processingStep={generationStep} onRecognize={handleRecognizeGuideImage} onSubmit={(answer, guideText) => void handlePrepareGeneration(answer, guideText)} onClose={() => setGenerateOpen(false)} />}
       {workspace && reviseOpen && <TextActionSheet title="整体调整行程" label="你希望怎样修改？" placeholder="例如：降低预算，并把第二天下午改为室内活动" loading={replanLoading} submitText="生成调整候选" onSubmit={(value) => void handleRevise(value)} onClose={() => setReviseOpen(false)} required />}
       {replanActivity && <TextActionSheet title={`调整：${replanActivity.title}`} label="调整要求" placeholder="说明希望保留和改变的内容" loading={replanLoading} submitText="生成局部调整候选" onSubmit={(value) => void handleReplan(value)} onClose={() => setReplanActivity(null)} required />}
-      {workspace && tripNotesOpen && <SaveTextSheet title="同行者的备注" intro="记录这次旅行中同行者的补充说明，便于回看和展示。" label="备注内容" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} />}
-      {workspace && guideOpen && <TextActionSheet title="导入攻略" label="粘贴攻略文字" placeholder="粘贴文章、笔记或推荐清单，Agent 会提取候选活动" loading={loading} submitText="提取候选活动" onSubmit={(value) => void handleImportGuide(value)} onClose={() => setGuideOpen(false)} required />}
+      {workspace && tripNotesOpen && <SaveTextSheet title="同行者的想法" intro="同一行程的成员都可以查看、编辑和保存；这些内容不会作为 Agent 的输入。" label="想法与备注" placeholder="例如：不赶早，留出拍照时间；周六中午想吃杭帮菜。" value={tripNote} onSave={handleSaveTripNote} onClose={() => setTripNotesOpen(false)} />}
+      {workspace && guideOpen && <GuideImportSheet loading={loading} onRecognize={handleRecognizeGuideImage} onSubmit={(value) => void handleImportGuide(value)} onClose={() => setGuideOpen(false)} />}
       {workspace && activityEditor && <ActivityEditorSheet activity={activityEditor.activity} defaultDay={activityEditor.day} defaultOrder={Math.max(0, ...workspace.activities.filter((item) => item.day === activityEditor.day).map((item) => item.order)) + 1} loading={loading} onSubmit={(values) => void handleSaveActivity(values)} onClose={() => setActivityEditor(null)} />}
       {workspace && expenseActivity !== undefined && authUser && <ExpenseSheet activity={expenseActivity ?? undefined} members={workspace.members} currentUserId={authUser.id} loading={loading} onSubmit={(values) => void handleCreateExpense(values)} onClose={() => setExpenseActivity(undefined)} />}
       {workspace && recordActivity !== undefined && <HighlightSheet activity={recordActivity ?? undefined} loading={loading} onSubmit={(title, content, files) => void handleCreateRecord(title, content, files)} onClose={() => setRecordActivity(undefined)} />}
-      {workspace && guideResult && <ModalSheet title="选择攻略候选" onClose={() => setGuideResult(null)} wide><div className="candidate-choice-list">{guideResult.candidates.map((candidate) => { const id = String(candidate.candidate_id ?? ""); const checked = guideResult.selected.includes(id); return <label className="candidate-choice" key={id}><input type="checkbox" checked={checked} onChange={() => setGuideResult((current) => current ? { ...current, selected: checked ? current.selected.filter((item) => item !== id) : [...current.selected, id] } : null)} /><span><strong>{String(candidate.title ?? "未命名候选")}</strong><small>{String(candidate.excerpt ?? "")}</small></span></label>; })}</div><button className="primary-button full-button" disabled={!guideResult.selected.length || loading} onClick={() => void handleApplyGuide()}>加入选中的活动</button></ModalSheet>}
+      {workspace && guideResult && <GuideCandidateSheet candidates={guideResult.candidates} dayCount={Math.max(1, Math.round((new Date(workspace.endDate).getTime() - new Date(workspace.startDate).getTime()) / 86400000) + 1)} activityCounts={workspace.activities.reduce<Record<number, number>>((counts, activity) => ({ ...counts, [activity.day]: (counts[activity.day] ?? 0) + 1 }), {})} loading={loading} onVerify={handleVerifyGuide} onApply={(placements) => void handleApplyGuide(placements)} onClose={() => setGuideResult(null)} />}
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
       {revisionSheet && <RevisionSheet revisions={revisionSheet} loading={dataLoading} onClose={() => setRevisionSheet(null)} />}
       {journalSheet && <TravelJournalSheet workspace={journalSheet.workspace} highlights={journalSheet.highlights} loading={dataLoading} onClose={() => setJournalSheet(null)} />}
       {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
       {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
-      {personalPreferencesOpen && <SaveTextSheet title="旅行偏好与常用信息" intro="保存你的出行偏好和常用信息，方便自己查看。" label="偏好与常用信息" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}
+      {personalPreferencesOpen && <SaveTextSheet title="旅行备忘录" intro="保存你想留下的旅行备忘内容，方便自己查看。" label="备忘内容" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}
       {authOpen && <AuthSheet mode={authMode} loading={authLoading} error={authError} onSubmit={(values) => void handleAuth(values)} onForgotPassword={handleForgotPassword} onToggle={() => { setAuthMode((mode) => mode === "login" ? "register" : "login"); setAuthError(""); }} />}
       {createTripOpen && authUser && <CreateTripSheet title={workspace ? "新建旅行" : "创建第一场旅行"} closable={Boolean(workspace)} onClose={() => setCreateTripOpen(false)} onSubmit={(values) => void handleCreateTrip(values)} />}
       <footer className="build-note">API：{apiConfig.baseUrl}{workspace ? ` · 行程 v${workspace.version}` : ""}</footer>

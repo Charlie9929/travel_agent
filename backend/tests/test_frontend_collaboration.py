@@ -37,6 +37,28 @@ def test_revision_presentation_exposes_stable_field_changes() -> None:
     assert result["changes"] == [{"field": "title", "before": "旧标题", "after": "新标题"}]
 
 
+def test_revision_presentation_prefers_natural_language_summary() -> None:
+    result = present_revision_diff(
+        {
+            "summary": "将返程航班顺延至最后一天",
+            "before": {"day_number": 2},
+            "after": {"day_number": 3},
+        },
+        resource_type="activity",
+        action="update",
+    )
+    assert result["summary"] == "将返程航班顺延至最后一天"
+
+
+def test_revision_presentation_names_activity_without_exposing_raw_diff() -> None:
+    result = present_revision_diff(
+        {"before": None, "after": {"title": "玉龙雪山"}},
+        resource_type="activity",
+        action="create",
+    )
+    assert result["summary"] == "新增活动“玉龙雪山”"
+
+
 def test_candidate_presentation_separates_changed_and_kept_items() -> None:
     result = candidate_presentation(
         {

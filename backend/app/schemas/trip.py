@@ -103,6 +103,7 @@ class TripRevisionRead(BaseModel):
     trip_id: int
     resource_id: int | None
     user_id: int
+    user_nickname: str | None = None
     version: int
     action: str
     diff_content: dict[str, Any]
@@ -112,6 +113,16 @@ class TripRevisionRead(BaseModel):
     before: Any | None = None
     after: Any | None = None
     changes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CollaborationNoteUpdate(BaseModel):
+    content: str = Field(default="", max_length=5000)
+
+
+class CollaborationNoteRead(BaseModel):
+    content: str = ""
+    updated_by_nickname: str | None = None
+    updated_at: datetime | None = None
 
 
 class TripValidationRequest(BaseModel):

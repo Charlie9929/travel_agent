@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 class GenerateRequest(BaseModel):
     trip_id: int
     additional_requirements: str | None = Field(default=None, max_length=4000)
+    reference_guide: str | None = Field(default=None, max_length=20_000)
 
 
 class ClarifyPreferencesRequest(BaseModel):
@@ -45,10 +46,22 @@ class ImportGuideRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
 
 
+class GuideCandidatePlacement(BaseModel):
+    candidate_id: str = Field(min_length=1, max_length=100)
+    day_number: int = Field(ge=1)
+    order_index: int = Field(ge=1)
+
+
+class VerifyGuideCandidatesRequest(BaseModel):
+    trip_version: int = Field(ge=1)
+    placements: list[GuideCandidatePlacement] = Field(min_length=1, max_length=30)
+
+
 class ApplyAiRunRequest(BaseModel):
     trip_version: int = Field(ge=1)
     apply_mode: Literal["replace_itinerary", "append_selected"] = "replace_itinerary"
     selected_candidate_ids: list[str] = Field(default_factory=list)
+    guide_placements: list[GuideCandidatePlacement] = Field(default_factory=list)
 
 
 class LLMResultSchema(BaseModel):

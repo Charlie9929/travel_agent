@@ -58,9 +58,11 @@ export type ApiRequirement = {
 };
 export type ApiRevision = {
   id: number; trip_id: number; resource_id: number | null; user_id: number; version: number; action: string;
+  user_nickname?: string | null;
   diff_content: JsonObject; resource_type: string; created_at: string; summary?: string | null; before?: unknown;
   after?: unknown; changes?: JsonObject[];
 };
+export type ApiCollaborationNote = { content: string; updated_by_nickname: string | null; updated_at: string | null };
 export type ApiExpenseSplit = { user_id: number; nickname: string; ratio: Money; should_pay: Money };
 export type ApiExpense = {
   id: number; trip_id: number; activity_id: number | null; payer_id: number; payer_nickname: string; title: string;
@@ -120,7 +122,7 @@ function queryString(params: Record<string, string | number | boolean | null | u
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  if (init.body !== undefined && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let response: Response;
@@ -231,6 +233,8 @@ export const api = {
     revisions: (tripId: number, params: { resourceType?: string; resourceId?: number; page?: number; pageSize?: number } = {}) => request<ApiRevision[]>(`/trips/${tripId}/revisions${queryString({ resource_type: params.resourceType, resource_id: params.resourceId, page: params.page, page_size: params.pageSize })}`),
     revision: (tripId: number, revisionId: number) => request<ApiRevision>(`/trips/${tripId}/revisions/${revisionId}`),
     validate: (tripId: number, candidateActivities?: JsonObject[]) => request<JsonObject>(`/trips/${tripId}/validate`, { method: "POST", body: JSON.stringify({ candidate_activities: candidateActivities ?? null }) }),
+    collaborationNote: (tripId: number) => request<ApiCollaborationNote>(`/trips/${tripId}/collaboration-note`),
+    updateCollaborationNote: (tripId: number, content: string) => request<ApiCollaborationNote>(`/trips/${tripId}/collaboration-note`, { method: "PUT", body: JSON.stringify({ content }) }),
   },
   members: {
     list: (tripId: number) => request<ApiMember[]>(`/trips/${tripId}/members`),
@@ -251,7 +255,7 @@ export const api = {
   },
   ai: {
     clarifyPreferences: (tripId: number, userMessage?: string, conversationSummary?: string) => request<{ ready: boolean; questions: string[]; structured_constraints: JsonObject; summary: string }>("/ai/clarify-preferences", { method: "POST", body: JSON.stringify({ trip_id: tripId, user_message: userMessage || null, conversation_summary: conversationSummary || null }) }),
-    generate: (tripId: number, additionalRequirements?: string) => request<JsonObject>("/ai/generate", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements || null }) }),
+    generate: (tripId: number, additionalRequirements?: string, referenceGuide?: string) => request<JsonObject>("/ai/generate", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements || null, reference_guide: referenceGuide || null }) }),
     replan: async (body: { trip_id: number; day_number: number; adjustment_requirements: string; trip_version: number; after_time?: string; trigger?: JsonObject; candidate_replacements?: JsonObject[] }) => {
       const result = await request<{ ai_run_id: number; candidate_itinerary: unknown; diff?: { ops: JsonObject[] }; summary: string; base_version: number; retry_count?: number; changed_items?: unknown[]; kept_items?: unknown[] }>("/ai/replan", { method: "POST", body: JSON.stringify(body) });
       return { aiRunId: result.ai_run_id, candidateItinerary: result.candidate_itinerary, summary: result.summary, baseVersion: result.base_version, diff: result.diff, retryCount: result.retry_count, changedItems: result.changed_items, keptItems: result.kept_items } satisfies ReplanResult;
@@ -259,10 +263,12 @@ export const api = {
     revise: (body: { trip_id: number; changed_constraints: JsonObject; user_instruction?: string; trip_version: number }) => request<JsonObject>("/ai/revise", { method: "POST", body: JSON.stringify(body) }),
     explainDiff: (body: { trip_id: number; mode?: "explain" | "conflict"; old_itinerary: JsonObject; new_itinerary: JsonObject | JsonObject[]; teammate_itinerary?: JsonObject }) => request<JsonObject>("/ai/explain-diff", { method: "POST", body: JSON.stringify(body) }),
     importGuide: (tripId: number, text: string) => request<JsonObject>("/ai/import-guide", { method: "POST", body: JSON.stringify({ trip_id: tripId, text }) }),
+    recognizeGuideImage: (tripId: number, file: File) => request<{ text: string; line_count: number; provider: string }>(`/ai/import-guide/ocr?trip_id=${tripId}`, { method: "POST", headers: { "Content-Type": file.type }, body: file }),
     run: (runId: number) => request<JsonObject>(`/ai/runs/${runId}`),
     retryApply: (runId: number) => request<JsonObject>(`/ai/runs/${runId}/retry-apply`, { method: "POST" }),
     applyRun: (tripId: number, runId: number, tripVersion: number) => request<JsonObject>(`/trips/${tripId}/ai-runs/${runId}/apply`, { method: "POST", body: JSON.stringify({ trip_version: tripVersion, apply_mode: "replace_itinerary", selected_candidate_ids: [] }) }),
-    applyGuideRun: (tripId: number, runId: number, tripVersion: number, selectedCandidateIds: string[]) => request<JsonObject>(`/trips/${tripId}/ai-runs/${runId}/apply`, { method: "POST", body: JSON.stringify({ trip_version: tripVersion, apply_mode: "append_selected", selected_candidate_ids: selectedCandidateIds }) }),
+    verifyGuideRun: (tripId: number, runId: number, tripVersion: number, placements: { candidate_id: string; day_number: number; order_index: number }[]) => request<{ candidates: JsonObject[] }>(`/trips/${tripId}/ai-runs/${runId}/verify-guide`, { method: "POST", body: JSON.stringify({ trip_version: tripVersion, placements }) }),
+    applyGuideRun: (tripId: number, runId: number, tripVersion: number, placements: { candidate_id: string; day_number: number; order_index: number }[]) => request<JsonObject>(`/trips/${tripId}/ai-runs/${runId}/apply`, { method: "POST", body: JSON.stringify({ trip_version: tripVersion, apply_mode: "append_selected", guide_placements: placements }) }),
   },
   map: {
     districts: () => loadDistricts(),

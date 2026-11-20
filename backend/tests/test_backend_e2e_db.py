@@ -180,6 +180,22 @@ async def test_full_backend_chain_permissions_polling_and_persistence(
             )
             assert invited.status_code == 201, invited.text
 
+            saved_note = await client.put(
+                f"/api/v1/trips/{trip_id}/collaboration-note",
+                headers=owner_headers,
+                json={"content": "去雪山前准备氧气瓶"},
+            )
+            assert saved_note.status_code == 200, saved_note.text
+            shared_note = await client.get(
+                f"/api/v1/trips/{trip_id}/collaboration-note", headers=editor_headers
+            )
+            assert shared_note.status_code == 200, shared_note.text
+            assert shared_note.json()["data"] == {
+                "content": "去雪山前准备氧气瓶",
+                "updated_by_nickname": "联调 Owner",
+                "updated_at": saved_note.json()["data"]["updated_at"],
+            }
+
             before_generation = await client.get(
                 f"/api/v1/trips/{trip_id}", headers=owner_headers
             )
