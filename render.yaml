@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: travel-agent-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: APP_NAME
+        value: 行伴 API
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: API_V1_PREFIX
+        value: /api/v1
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "[]"
+      - key: LLM_USE_FAKE
+        value: "true"
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: AMAP_API_KEY
+        sync: false
+      - key: QWEATHER_API_HOST
+        sync: false
+      - key: QWEATHER_API_KEY
+        sync: false
+      - key: QWEATHER_JWT_TOKEN
+        sync: false
+      - key: UPLOAD_DIR
+        value: /tmp/uploads
