@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Bot, RefreshCw, Send } from "lucide-react";
 import type { AgentMessage, AuthUser, LobbyMessage } from "../types";
 import { ModalSheet } from "./ModalSheet";
@@ -9,6 +9,7 @@ export function ChatSheet({
   agentMessages,
   loading,
   onSend,
+  onRetry,
   onRefresh,
   onOpenCandidate,
   onClose,
@@ -21,6 +22,7 @@ export function ChatSheet({
   agentMessages: AgentMessage[];
   loading: boolean;
   onSend: (content: string) => void;
+  onRetry?: (message: LobbyMessage) => void;
   onRefresh: () => void;
   onOpenCandidate?: (data: Record<string, unknown>) => void;
   onClose: () => void;
@@ -29,19 +31,33 @@ export function ChatSheet({
   readOnly?: boolean;
 }) {
   const [content, setContent] = useState("");
+  const listRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
   const isLobby = mode === "lobby";
   const messages = isLobby ? lobbyMessages : agentMessages;
 
+  useEffect(() => {
+    const list = listRef.current;
+    if (list && stickToBottom.current) list.scrollTop = list.scrollHeight;
+  }, [messages.length, loading]);
+
   return (
     <ModalSheet title={title ?? (isLobby ? "大厅讨论" : "和 Agent 私聊")} onClose={onClose} wide>
-      <div className="chat-toolbar"><span>{readOnly ? "旅行已归档 · 仅支持查看" : isLobby ? "同行者可见 · @Agent 可回答行程问题，也可生成调整候选" : "仅你和 Agent 可见 · 可询问行程或生成调整候选"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
-      <div className="chat-list" aria-live="polite">
+      <div className="chat-toolbar"><span>{readOnly ? "旅行已归档 · 仅支持查看" : loading ? (isLobby ? "消息发送中…" : "Agent 正在思考…") : isLobby ? "同行者可见 · @Agent 可回答行程问题，也可生成调整候选" : "仅你和 Agent 可见 · 可询问行程或生成调整候选"}</span><button className="small-icon-button" onClick={onRefresh} aria-label="刷新消息"><RefreshCw size={16} /></button></div>
+      <div className="chat-list" ref={listRef} onScroll={(event) => {
+        const list = event.currentTarget;
+        stickToBottom.current = list.scrollHeight - list.scrollTop - list.clientHeight < 72;
+      }} aria-live="polite">
         {messages.length === 0 && <div className="empty-chat">还没有消息，发起第一条对话吧。</div>}
         {isLobby ? lobbyMessages.map((message) => {
           const mine = message.kind === "user" && message.senderId === currentUser.id;
           const hasCandidate = Boolean(message.structuredData.requires_confirmation && message.structuredData.ai_run_id);
+          const localStatus = String(message.structuredData.local_status ?? "");
+          const retryMessageId = Number(message.structuredData.retry_message_id ?? 0);
+          const canRetry = localStatus === "failed" && (retryMessageId > 0 || Boolean(message.structuredData.retry_content));
           const label = mine ? "我" : message.kind === "agent" ? "Agent" : message.kind === "system" ? "系统" : message.senderNickname ?? "同行者";
-          return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className={`chat-avatar ${message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}>{message.kind === "agent" ? <Bot size={18} /> : message.kind === "system" ? "系" : message.senderAvatarUrl ? <img src={message.senderAvatarUrl} alt="" /> : label.slice(0, 1)}</span>}<article className={`chat-bubble ${mine ? "is-user" : message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}><strong>{label}</strong><p>{message.content}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看公开调整候选</button>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
+          const displayContent = localStatus === "pending" ? "Agent 正在回复…" : message.content || (localStatus === "failed" ? "Agent 暂时无法回复" : "");
+          return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className={`chat-avatar ${message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}>{message.kind === "agent" ? <Bot size={18} /> : message.kind === "system" ? "系" : message.senderAvatarUrl ? <img src={message.senderAvatarUrl} alt="" /> : label.slice(0, 1)}</span>}<article className={`chat-bubble ${mine ? "is-user" : message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}><strong>{label}</strong><p>{displayContent}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看公开调整候选</button>}{canRetry && <button className="chat-retry-button" onClick={() => onRetry?.(message)}>重新尝试</button>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
         }) : agentMessages.map((message) => {
           const hasCandidate = Boolean(message.structuredData.requires_confirmation && message.structuredData.ai_run_id);
           const applied = Boolean(message.structuredData.applied);

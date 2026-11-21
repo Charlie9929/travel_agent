@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "./components/AppShell";
 import { ActivityEditorSheet, type ActivityFormValues } from "./components/ActivityEditorSheet";
 import { AuthSheet } from "./components/AuthSheet";
@@ -57,6 +57,22 @@ const generationSteps = ["正在读取需求", "正在构思行程", "正在生�
 function shareCodeFromPath() {
   const match = window.location.pathname.match(/^\/join\/([^/]+)$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function agentMentioned(content: string) {
+  return /(?:@|＠)\s*agent\b/i.test(content) || /艾特\s*agent\b/i.test(content);
+}
+
+function mergeLobbyMessages(current: LobbyMessage[], incoming: LobbyMessage[]) {
+  const serverMessages = new Map(current.filter((item) => item.id > 0).map((item) => [item.id, item]));
+  const incomingServer = incoming.filter((item) => item.id > 0);
+  incomingServer.forEach((item) => serverMessages.set(item.id, item));
+  const localMessages = [...current.filter((item) => item.id < 0), ...incoming.filter((item) => item.id < 0)]
+    .filter((local) => !incomingServer.some((server) => server.kind === local.kind && server.senderId === local.senderId && server.content === local.content));
+  return [...serverMessages.values(), ...localMessages].sort((left, right) => {
+    const timeDiff = new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    return timeDiff || left.id - right.id;
+  });
 }
 
 function candidateFromResponse(response: JsonObject): ReplanResult {
@@ -188,8 +204,15 @@ function App() {
   const [journalSheet, setJournalSheet] = useState<{ workspace: Workspace; highlights: ApiHighlight[] } | null>(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [notice, setNotice] = useState("");
+  const [archivedActionNoticeOpen, setArchivedActionNoticeOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [conflict, setConflict] = useState<ConflictResolution | null>(null);
+  const lobbyMessagesRef = useRef<LobbyMessage[]>([]);
+  const localMessageIdRef = useRef(-1);
+
+  useEffect(() => {
+    lobbyMessagesRef.current = lobbyMessages;
+  }, [lobbyMessages]);
 
   const handleUnauthorized = useCallback(() => {
     api.auth.logout();
@@ -312,22 +335,70 @@ function App() {
       return;
     }
     let cancelled = false;
+    let inFlight = false;
     setLobbyListLoading(true);
-    void Promise.all(trips.map(async (trip) => {
+    const loadPreviews = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const result = await api.collaboration.lobby.list(trip.id);
-        const latest = result.items.at(-1);
-        return { tripId: trip.id, lastMessage: latest?.content ?? "", lastAt: latest?.createdAt ?? null, unread: result.unread_count } satisfies LobbyPreview;
-      } catch {
-        return { tripId: trip.id, lastMessage: "消息暂时无法读取", lastAt: null, unread: 0 } satisfies LobbyPreview;
+        const items = await Promise.all(trips.map(async (trip) => {
+          try {
+            const result = await api.collaboration.lobby.list(trip.id);
+            const latest = result.items.at(-1);
+            return { tripId: trip.id, lastMessage: latest?.content ?? "", lastAt: latest?.createdAt ?? null, unread: result.unread_count } satisfies LobbyPreview;
+          } catch {
+            return { tripId: trip.id, lastMessage: "消息暂时无法读取", lastAt: null, unread: 0 } satisfies LobbyPreview;
+          }
+        }));
+        if (!cancelled) setLobbyPreviews(items);
+      } finally {
+        inFlight = false;
+        if (!cancelled) setLobbyListLoading(false);
       }
-    })).then((items) => {
-      if (!cancelled) setLobbyPreviews(items);
-    }).finally(() => {
-      if (!cancelled) setLobbyListLoading(false);
-    });
-    return () => { cancelled = true; };
+    };
+    void loadPreviews();
+    const timer = window.setInterval(() => void loadPreviews(), 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [activeTab, authUser, trips]);
+
+  useEffect(() => {
+    if (chatMode !== "lobby" || !workspace || !authUser) return;
+    const tripId = workspace.tripId;
+    let cancelled = false;
+    let inFlight = false;
+    const pollLobby = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const lastServerId = lobbyMessagesRef.current.filter((item) => item.id > 0).at(-1)?.id;
+      try {
+        const result = await api.collaboration.lobby.list(tripId, lastServerId);
+        if (cancelled) return;
+        if (result.items.length) {
+          setLobbyMessages((items) => {
+            const next = mergeLobbyMessages(items, result.items);
+            lobbyMessagesRef.current = next;
+            return next;
+          });
+          const latest = result.items.at(-1);
+          if (latest) {
+            await api.collaboration.lobby.markRead(tripId, latest.id);
+            if (!cancelled) {
+              setLobbyUnread(0);
+              setLobbyPreviews((items) => items.map((item) => item.tripId === tripId ? { ...item, lastMessage: latest.content, lastAt: latest.createdAt, unread: 0 } : item));
+            }
+          }
+        } else if (!cancelled) {
+          setLobbyUnread(result.unread_count);
+        }
+      } catch (error) {
+        if (!cancelled && error instanceof ApiError && error.status === 401) handleUnauthorized();
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void pollLobby(), 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [authUser, chatMode, handleUnauthorized, workspace]);
 
   const handleAuth = async (values: { username: string; password: string; nickname: string }) => {
     setAuthLoading(true);
@@ -414,7 +485,7 @@ function App() {
   const isTripArchived = workspace?.status === "finished";
   const ensureTripWritable = () => {
     if (isTripArchived) {
-      setNotice("旅行已归档，内容仅支持查看");
+      setArchivedActionNoticeOpen(true);
       return false;
     }
     return true;
@@ -506,6 +577,7 @@ function App() {
     try {
       const result = await api.collaboration.lobby.list(tripId);
       setLobbyMessages(result.items);
+      lobbyMessagesRef.current = result.items;
       setLobbyUnread(result.unread_count);
       const latest = result.items.at(-1);
       if (latest) await api.collaboration.lobby.markRead(tripId, latest.id);
@@ -562,18 +634,174 @@ function App() {
   };
 
   const handleChatSend = async (content: string) => {
-    if (!chatMode || !workspace || !ensureTripWritable()) return;
+    if (!chatMode || !workspace || !authUser || !ensureTripWritable()) return;
+    const asksAgent = agentMentioned(content);
+    const localUserId = localMessageIdRef.current--;
+    const localAgentId = localMessageIdRef.current--;
+    const createdAt = new Date().toISOString();
     setChatLoading(true);
+    if (chatMode === "lobby") {
+      const localUserMessage: LobbyMessage = {
+        id: localUserId,
+        tripId: workspace.tripId,
+        senderId: authUser.id,
+        senderNickname: authUser.nickname,
+        senderAvatarUrl: authUser.avatarUrl ?? null,
+        kind: "user",
+        content,
+        visibility: "trip",
+        replyToId: null,
+        structuredData: { local_id: localUserId },
+        createdAt,
+      };
+      const localAgentMessage: LobbyMessage = {
+        id: localAgentId,
+        tripId: workspace.tripId,
+        senderId: null,
+        senderNickname: null,
+        senderAvatarUrl: null,
+        kind: "agent",
+        content: "",
+        visibility: "trip",
+        replyToId: localUserId,
+        structuredData: { local_status: "pending", retry_content: content, local_user_id: localUserId },
+        createdAt: new Date(Date.now() + 1).toISOString(),
+      };
+      const optimistic = asksAgent ? [localUserMessage, localAgentMessage] : [localUserMessage];
+      setLobbyMessages((items) => {
+        const next = mergeLobbyMessages(items, optimistic);
+        lobbyMessagesRef.current = next;
+        return next;
+      });
+    } else {
+      const localUserMessage: AgentMessage = {
+        id: localUserId,
+        conversationId: agentConversationId ?? 0,
+        role: "user",
+        content,
+        status: "succeeded",
+        errorCode: null,
+        structuredData: { local_id: localUserId },
+        createdAt,
+      };
+      const localAgentMessage: AgentMessage = {
+        id: localAgentId,
+        conversationId: agentConversationId ?? 0,
+        role: "assistant",
+        content: "",
+        status: "pending",
+        errorCode: null,
+        structuredData: { local_status: "pending", retry_content: content },
+        createdAt: new Date(Date.now() + 1).toISOString(),
+      };
+      setAgentMessages((items) => [...items, localUserMessage, localAgentMessage]);
+    }
     try {
       if (chatMode === "lobby") {
-        const created = await api.collaboration.lobby.send(workspace.tripId, content, content.toLowerCase().includes("@agent"));
-        setLobbyMessages((items) => [...items, ...created]);
+        const created = await api.collaboration.lobby.send(workspace.tripId, content, asksAgent);
+        setLobbyMessages((items) => {
+          const next = mergeLobbyMessages(items.filter((item) => item.id !== localUserId && item.id !== localAgentId), created);
+          lobbyMessagesRef.current = next;
+          return next;
+        });
+        const latest = created.at(-1);
+        if (latest) {
+          await api.collaboration.lobby.markRead(workspace.tripId, latest.id);
+          setLobbyUnread(0);
+          setLobbyPreviews((items) => items.map((item) => item.tripId === workspace.tripId ? { ...item, lastMessage: latest.content, lastAt: latest.createdAt, unread: 0 } : item));
+        }
       } else if (agentConversationId) {
         const result = await api.collaboration.agent.send(agentConversationId, content);
-        setAgentMessages((items) => [...items, result.userMessage, result.agentMessage]);
+        setAgentMessages((items) => [...items.filter((item) => item.id !== localUserId && item.id !== localAgentId), result.userMessage, result.agentMessage]);
+        if (result.agentMessage.status === "failed") setNotice(`Agent 暂时无法回复：${result.agentMessage.content || "请稍后重试"}`);
       }
     } catch (error) {
-      setNotice(`发送失败：${(error as Error).message}`);
+      if (chatMode === "lobby" && asksAgent) {
+        const detail = error instanceof ApiError && error.detail && typeof error.detail === "object" ? error.detail as Record<string, unknown> : {};
+        const savedMessageId = typeof detail.user_message_id === "number" ? detail.user_message_id : undefined;
+        let serverMessages: LobbyMessage[] | null = null;
+        if (savedMessageId) {
+          try {
+            serverMessages = (await api.collaboration.lobby.list(workspace.tripId)).items;
+          } catch {
+            serverMessages = null;
+          }
+        }
+        const failedAgent: LobbyMessage = {
+          id: localAgentId,
+          tripId: workspace.tripId,
+          senderId: null,
+          senderNickname: null,
+          senderAvatarUrl: null,
+          kind: "agent",
+          content: "",
+          visibility: "trip",
+          replyToId: savedMessageId ?? localUserId,
+          structuredData: {
+            local_status: "failed",
+            retry_content: content,
+            retry_message_id: savedMessageId,
+            local_user_id: localUserId,
+          },
+          createdAt: new Date().toISOString(),
+        };
+        setLobbyMessages((items) => {
+          const base = serverMessages ?? items;
+          const withoutLocal = base.filter((item) => item.id !== localUserId && item.id !== localAgentId);
+          const next = mergeLobbyMessages(withoutLocal, [failedAgent]);
+          lobbyMessagesRef.current = next;
+          return next;
+        });
+        setNotice(`Agent 暂时无法回复：${specificErrorMessage(error)}`);
+      } else {
+        if (chatMode === "lobby") {
+          setLobbyMessages((items) => {
+            const next = items.filter((item) => item.id !== localUserId);
+            lobbyMessagesRef.current = next;
+            return next;
+          });
+        } else {
+          setAgentMessages((items) => items.filter((item) => item.id !== localUserId && item.id !== localAgentId));
+        }
+        setNotice(`发送失败：${specificErrorMessage(error)}`);
+      }
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleLobbyRetry = async (message: LobbyMessage) => {
+    if (!workspace || !ensureTripWritable()) return;
+    const retryContent = String(message.structuredData.retry_content ?? "");
+    const retryMessageId = Number(message.structuredData.retry_message_id ?? 0);
+    if (!retryContent) return;
+    setChatLoading(true);
+    setLobbyMessages((items) => {
+      const next = items.map((item) => item.id === message.id ? { ...item, content: "", structuredData: { ...item.structuredData, local_status: "pending" } } : item);
+      lobbyMessagesRef.current = next;
+      return next;
+    });
+    try {
+      const created = retryMessageId > 0
+        ? await api.collaboration.lobby.retryAgent(workspace.tripId, retryMessageId)
+        : await api.collaboration.lobby.send(workspace.tripId, retryContent, true);
+      setLobbyMessages((items) => {
+        const next = mergeLobbyMessages(items.filter((item) => item.id !== message.id && item.id !== Number(message.structuredData.local_user_id ?? 0)), created);
+        lobbyMessagesRef.current = next;
+        return next;
+      });
+      const latest = created.at(-1);
+      if (latest) {
+        await api.collaboration.lobby.markRead(workspace.tripId, latest.id);
+        setLobbyUnread(0);
+      }
+    } catch (error) {
+      setLobbyMessages((items) => {
+        const next = items.map((item) => item.id === message.id ? { ...item, structuredData: { ...item.structuredData, local_status: "failed" } } : item);
+        lobbyMessagesRef.current = next;
+        return next;
+      });
+      setNotice(`Agent 暂时无法回复：${specificErrorMessage(error)}`);
     } finally {
       setChatLoading(false);
     }
@@ -904,7 +1132,7 @@ function App() {
     }
     if (!targetWorkspace) return;
     if (targetWorkspace.status === "finished" && label === "攻略导入") {
-      setNotice("旅行已归档，内容仅支持查看，不能导入攻略");
+      setArchivedActionNoticeOpen(true);
       return;
     }
     if (label === "和 Agent 聊聊") {
@@ -1042,7 +1270,7 @@ function App() {
   const currentPage = authUser
     ? activeTab === "world"
       ? tripDetailOpen && workspace
-        ? <WorldPage workspace={workspace} currentUserId={authUser?.id ?? null} canManageMembers={!isTripArchived && isTripOwner} canEditItinerary={canEditItinerary} onInviteMember={() => setInviteOpen(true)} onChangeMemberRole={handleChangeMemberRole} onReorderActivities={handleReorderActivities} onBack={() => setTripDetailOpen(false)} onSettings={() => setTripSettingsOpen(true)} onReplan={setReplanActivity} onGenerate={openGenerateFlow} onRevise={() => setReviseOpen(true)} onOpenVersions={() => void openFeature("行程版本")} onAddActivity={(day) => setActivityEditor({ day })} onEditActivity={(activity) => setActivityEditor({ activity, day: activity.day })} onDeleteActivity={(activity) => void handleDeleteActivity(activity)} onAddExpense={(activity) => setExpenseActivity(activity)} onAddRecord={(activity) => setRecordActivity(activity)} />
+        ? <WorldPage workspace={workspace} currentUserId={authUser?.id ?? null} canManageMembers={!isTripArchived && isTripOwner} canEditItinerary={canEditItinerary} onArchivedAction={() => setArchivedActionNoticeOpen(true)} onInviteMember={() => setInviteOpen(true)} onChangeMemberRole={handleChangeMemberRole} onReorderActivities={handleReorderActivities} onBack={() => setTripDetailOpen(false)} onSettings={() => setTripSettingsOpen(true)} onReplan={setReplanActivity} onGenerate={openGenerateFlow} onRevise={() => setReviseOpen(true)} onOpenVersions={() => void openFeature("行程版本")} onAddActivity={(day) => setActivityEditor({ day })} onEditActivity={(activity) => setActivityEditor({ activity, day: activity.day })} onDeleteActivity={(activity) => void handleDeleteActivity(activity)} onAddExpense={(activity) => setExpenseActivity(activity)} onAddRecord={(activity) => setRecordActivity(activity)} />
         : <TripListPage trips={trips} onCreate={() => setCreateTripOpen(true)} onOpenTrip={(tripId) => void handleSelectTrip(tripId)} onOpenHistory={(tripId) => void handleOpenHistory(tripId)} />
       : activeTab === "lobby"
         ? lobbyDetailOpen && workspace
@@ -1050,7 +1278,7 @@ function App() {
           : <LobbyListPage trips={trips} previews={lobbyPreviews} loading={lobbyListLoading} onOpenChat={(tripId) => void handleOpenTripChat(tripId)} onManage={(tripId) => void handleManageLobby(tripId)} />
         : activeTab === "functions"
           ? workspace
-            ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
+            ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onArchivedAction={() => setArchivedActionNoticeOpen(true)} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
             : noSelectedTrip
           : <HomePage user={authUser} loading={loading} personalPreferences={personalPreferences} onOpen={(label) => void openFeature(label)} onOpenPreferences={() => { setPersonalPreferences(readSavedText(personalPreferencesKey(authUser.id))); setPersonalPreferencesOpen(true); }} onUploadAvatar={(file) => void handleUploadAvatar(file)} onChangePassword={() => setPasswordOpen(true)} onLogout={handleLogout} />
     : <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先登录</h1><p>登录后读取你的真实行程和协作数据。</p><button className="primary-button" onClick={() => setAuthOpen(true)}>登录或注册</button></section></div>;
@@ -1060,6 +1288,10 @@ function App() {
       {currentPage}
       {loading && <div className="sync-indicator">正在同步后端…</div>}
       {notice && <div className="toast" role="status">{notice}</div>}
+      {archivedActionNoticeOpen && <ModalSheet title="温馨提示" onClose={() => setArchivedActionNoticeOpen(false)}>
+        <p className="sheet-intro">已经结束的旅行不能修改哦</p>
+        <button className="primary-button full-button" onClick={() => setArchivedActionNoticeOpen(false)}>知道了</button>
+      </ModalSheet>}
       {conflict && <ModalSheet title="检测到同行者刚刚修改了行程" onClose={() => setConflict(null)}>
         <p className="sheet-intro">你正在{conflict.action}，但服务器已有更新。{conflict.submittedVersion && conflict.currentVersion ? `你基于第 ${conflict.submittedVersion} 版操作，当前已是第 ${conflict.currentVersion} 版。` : "为避免覆盖同行者内容，请先选择处理方式。"}</p>
         <div className="conflict-actions"><button className="primary-button full-button" disabled={loading || replanLoading} onClick={() => void handleConflictRetry()}>同步最新版并重试我的修改</button><button className="secondary-button full-button" onClick={() => { const tripId = workspace?.tripId; setConflict(null); if (tripId) void refreshWorkspace(tripId); }}>保留服务器最新版</button></div>
@@ -1089,7 +1321,7 @@ function App() {
       {dataSheet && <DataSheet title={dataSheet.title} rows={dataSheet.rows} loading={dataLoading} onClose={() => setDataSheet(null)} />}
       {revisionSheet && <RevisionSheet revisions={revisionSheet} loading={dataLoading} onClose={() => setRevisionSheet(null)} />}
       {journalSheet && <TravelJournalSheet workspace={journalSheet.workspace} highlights={journalSheet.highlights} loading={dataLoading} onClose={() => setJournalSheet(null)} />}
-      {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} readOnly={isTripArchived} onSend={(content) => void handleChatSend(content)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
+      {chatMode && authUser && <ChatSheet mode={chatMode} title={chatMode === "lobby" && workspace ? workspace.title : workspace ? `${workspace.title} · Agent` : undefined} lobbyMessages={lobbyMessages} agentMessages={agentMessages} loading={chatLoading} currentUser={authUser} readOnly={isTripArchived} onSend={(content) => void handleChatSend(content)} onRetry={(message) => void handleLobbyRetry(message)} onRefresh={() => void (chatMode === "lobby" ? openLobby() : openAgentChat(workspace?.tripId))} onOpenCandidate={(data) => setReplanResult(candidateFromResponse(data as JsonObject))} onClose={() => setChatMode(null)} />}
       {replanResult && <CandidateSheet result={replanResult} loading={replanLoading} canApply={canEditItinerary} onApply={() => void handleApplyCandidate()} onDiscuss={() => { setReplanResult(null); void openAgentChat(workspace?.tripId); }} onClose={() => setReplanResult(null)} />}
       {passwordOpen && <PasswordSheet loading={loading} onSubmit={(currentPassword, newPassword) => void handleChangePassword(currentPassword, newPassword)} onClose={() => setPasswordOpen(false)} />}
       {personalPreferencesOpen && <SaveTextSheet title="旅行备忘录" intro="保存你想留下的旅行备忘内容，方便自己查看。" label="备忘内容" placeholder="例如：喜欢自然景观、少走路、不能吃辣、常用高铁出行。" value={personalPreferences} onSave={handleSavePersonalPreferences} onClose={() => setPersonalPreferencesOpen(false)} />}

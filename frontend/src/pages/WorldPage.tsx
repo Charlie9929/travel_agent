@@ -231,6 +231,17 @@ function mapRouteUrl(app: MapApp, activity: Activity, mode: RouteMode): string |
   return `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=${amapMode}&policy=1&src=xingban&coordinate=gaode&callnative=1`;
 }
 
+function mapBrowserUrl(activity: Activity, mode: RouteMode) {
+  const locationName = activity.location || activity.title;
+  const name = encodeURIComponent(locationName);
+  const { latitude: lat, longitude: lng } = activity;
+  if (lat == null || lng == null) {
+    return `https://uri.amap.com/search?keyword=${name}&src=xingban`;
+  }
+  const amapMode = mode === "drive" ? "car" : mode === "transit" ? "bus" : mode === "bike" ? "ride" : "walk";
+  return `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=${amapMode}&policy=1&src=xingban&coordinate=gaode&callnative=0`;
+}
+
 function downloadCalendar(workspace: Workspace, activities: Activity[]) {
   const pad = (value: number) => String(value).padStart(2, "0");
   const escape = (value: string) =>
@@ -284,6 +295,7 @@ export function WorldPage({
   onAddRecord,
   onReorderActivities,
   canEditItinerary,
+  onArchivedAction,
   onInviteMember,
   onChangeMemberRole,
   currentUserId,
@@ -303,6 +315,7 @@ export function WorldPage({
   onAddRecord: (activity: Activity) => void;
   onReorderActivities: (dayNumber: number, activityIds: number[]) => Promise<void>;
   canEditItinerary: boolean;
+  onArchivedAction: () => void;
   onInviteMember: () => void;
   onChangeMemberRole: (memberId: number, role: "editor" | "viewer") => Promise<void>;
   currentUserId: number | null;
@@ -677,8 +690,8 @@ export function WorldPage({
           <div className="header-actions">
             <button
               className="action-pill"
-              onClick={workspace.activities.length ? onRevise : onGenerate}
-              disabled={!canEditItinerary}
+              onClick={() => canEditItinerary ? (workspace.activities.length ? onRevise() : onGenerate()) : onArchivedAction()}
+              aria-disabled={!canEditItinerary}
             >
               {workspace.status === "finished" ? "已归档" : workspace.activities.length ? "整体调整" : "Agent 生成"}
             </button>
@@ -697,7 +710,7 @@ export function WorldPage({
           <Sparkles size={30} />
           <h2>还没有生成行程</h2>
           <p>让 Agent 根据目的地、日期、预算和成员需求生成第一版行程。</p>
-          <button className="primary-button" onClick={onGenerate} disabled={!canEditItinerary}>
+          <button className="primary-button" onClick={() => canEditItinerary ? onGenerate() : onArchivedAction()} aria-disabled={!canEditItinerary}>
             开始生成行程
           </button>
         </section>
@@ -1067,6 +1080,12 @@ export function WorldPage({
               );
             })}
           </div>
+          <button
+            className="secondary-button full-button"
+            onClick={() => window.location.assign(mapBrowserUrl(navigationTarget.activity, navigationTarget.mode))}
+          >
+            使用浏览器打开
+          </button>
         </ModalSheet>
       )}
     </div>

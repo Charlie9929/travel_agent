@@ -47,6 +47,11 @@ def _agent_adjustment_requested(content: str) -> bool:
     )
 
 
+def _agent_mentioned(content: str) -> bool:
+    """Recognize the common half/full-width forms users enter in chat."""
+    return bool(re.search(r"(?:@|＠)\s*agent\b|艾特\s*agent\b", content, re.IGNORECASE))
+
+
 async def _lobby_message_read(session: DbSession, message: LobbyMessage) -> LobbyMessageRead:
     sender = await session.get(User, message.sender_id) if message.sender_id else None
     return LobbyMessageRead(
@@ -61,6 +66,90 @@ async def _lobby_message_read(session: DbSession, message: LobbyMessage) -> Lobb
         reply_to_id=message.reply_to_id,
         structured_data=message.structured_data,
         created_at=message.created_at,
+    )
+
+
+async def _generate_lobby_agent_message(
+    session: DbSession,
+    *,
+    trip_id: int,
+    user_message: LobbyMessage,
+    user_id: int,
+) -> LobbyMessage:
+    trip = await session.get(Trip, trip_id)
+    if trip is None:
+        raise NotFoundError("行程不存在")
+    public_history = list(
+        (
+            await session.scalars(
+                select(LobbyMessage)
+                .where(LobbyMessage.trip_id == trip_id)
+                .order_by(LobbyMessage.id.desc())
+                .limit(30)
+            )
+        ).all()
+    )
+    history_text = "\n".join(
+        f"[{item.kind}:{item.sender_id or 'system'}] {item.content}"
+        for item in reversed(public_history)
+    )
+    if _agent_adjustment_requested(user_message.content):
+        instruction = (
+            "请根据以下截至当前最近 30 条群聊公开记录，生成一版新的整体行程调整候选。"
+            "只采用群聊中明确提出且与行程有关的共识或最新要求；不得读取任何成员私聊。\n\n"
+            f"群聊记录：\n{history_text}\n\n最新触发消息：{user_message.content}"
+        )
+        run, result = await generate_revision_candidate(
+            session=session,
+            trip_id=trip_id,
+            user_id=user_id,
+            changed_constraints={},
+            user_instruction=instruction,
+            trip_version=trip.version,
+        )
+        candidate = result.parsed_data
+        presentation = candidate_presentation(candidate)
+        structured_data = {
+            "workflow": "group_revise",
+            "ai_run_id": run.id,
+            "candidate_itinerary": candidate["proposed_itinerary"],
+            "diff": candidate["diff"],
+            "summary": candidate["summary"],
+            "base_version": trip.version,
+            "retry_count": run.retry_count,
+            "requires_confirmation": True,
+            "trigger": "explicit_mention",
+            "requested_by": user_id,
+            **presentation,
+        }
+        agent_content = candidate["summary"]
+    else:
+        agent_content = await generate_chat_reply(
+            session,
+            trip_id=trip_id,
+            user_id=user_id,
+            question=user_message.content,
+            mode="group",
+            recent_messages=[
+                {"role": item.kind, "content": item.content}
+                for item in reversed(public_history)
+                if item.kind in {"user", "agent", "system"}
+            ],
+        )
+        structured_data = {
+            "workflow": "group_chat",
+            "mode": "answer",
+            "trigger": "explicit_mention",
+            "requested_by": user_id,
+            "requires_confirmation": False,
+        }
+    return LobbyMessage(
+        trip_id=trip_id,
+        sender_id=None,
+        kind="agent",
+        content=agent_content,
+        reply_to_id=user_message.id,
+        structured_data=structured_data,
     )
 
 
@@ -137,95 +226,74 @@ async def send_lobby_message(
     session.add(user_message)
     await session.flush()
     created = [user_message]
-    ask_agent = payload.ask_agent or "@Agent" in payload.content or "@agent" in payload.content
+    ask_agent = payload.ask_agent or _agent_mentioned(payload.content)
     if ask_agent:
-        public_history = list(
-            (
-                await session.scalars(
-                    select(LobbyMessage)
-                    .where(LobbyMessage.trip_id == trip_id)
-                    .order_by(LobbyMessage.id.desc())
-                    .limit(30)
-                )
-            ).all()
-        )
         try:
-            trip = await session.get(Trip, trip_id)
-            if trip is None:
-                raise NotFoundError("行程不存在")
-            history_text = "\n".join(
-                f"[{item.kind}:{item.sender_id or 'system'}] {item.content}"
-                for item in reversed(public_history)
+            agent_message = await _generate_lobby_agent_message(
+                session,
+                trip_id=trip_id,
+                user_message=user_message,
+                user_id=current_user.id,
             )
-            adjustment_requested = _agent_adjustment_requested(payload.content)
-            if adjustment_requested:
-                instruction = (
-                    "请根据以下截至当前最近 30 条群聊公开记录，生成一版新的整体行程调整候选。"
-                    "只采用群聊中明确提出且与行程有关的共识或最新要求；不得读取任何成员私聊。\n\n"
-                    f"群聊记录：\n{history_text}\n\n最新触发消息：{payload.content}"
-                )
-                run, result = await generate_revision_candidate(
-                    session=session,
-                    trip_id=trip_id,
-                    user_id=current_user.id,
-                    changed_constraints={},
-                    user_instruction=instruction,
-                    trip_version=trip.version,
-                )
-                candidate = result.parsed_data
-                presentation = candidate_presentation(candidate)
-                structured_data = {
-                    "workflow": "group_revise",
-                    "ai_run_id": run.id,
-                    "candidate_itinerary": candidate["proposed_itinerary"],
-                    "diff": candidate["diff"],
-                    "summary": candidate["summary"],
-                    "base_version": trip.version,
-                    "retry_count": run.retry_count,
-                    "requires_confirmation": True,
-                    "trigger": "explicit_mention",
-                    "requested_by": current_user.id,
-                    **presentation,
-                }
-                agent_content = candidate["summary"]
-            else:
-                agent_content = await generate_chat_reply(
-                    session,
-                    trip_id=trip_id,
-                    user_id=current_user.id,
-                    question=payload.content,
-                    mode="group",
-                    recent_messages=[
-                        {"role": item.kind, "content": item.content}
-                        for item in reversed(public_history)
-                        if item.kind in {"user", "agent", "system"}
-                    ],
-                )
-                structured_data = {
-                    "workflow": "group_chat",
-                    "mode": "answer",
-                    "trigger": "explicit_mention",
-                    "requested_by": current_user.id,
-                    "requires_confirmation": False,
-                }
         except AppError as exc:
             await session.commit()
             exc.detail = {"user_message_id": user_message.id, "agent_error": exc.detail}
             raise
-        agent_message = LobbyMessage(
-            trip_id=trip_id,
-            sender_id=None,
-            kind="agent",
-            content=agent_content,
-            reply_to_id=user_message.id,
-            structured_data=structured_data,
-        )
         session.add(agent_message)
         created.append(agent_message)
     await session.commit()
     for item in created:
         await session.refresh(item)
     return ApiResponse(data=[await _lobby_message_read(session, item) for item in created])
+
+
+@router.post(
+    "/trips/{trip_id}/messages/{message_id}/agent",
+    response_model=ApiResponse[list[LobbyMessageRead]],
+    status_code=201,
+)
+async def retry_lobby_agent_message(
+    trip_id: int,
+    message_id: int,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> ApiResponse[list[LobbyMessageRead]]:
+    await require_active_trip_member(session, trip_id, current_user.id)
+    user_message = await session.scalar(
+        select(LobbyMessage).where(
+            LobbyMessage.id == message_id,
+            LobbyMessage.trip_id == trip_id,
+            LobbyMessage.kind == "user",
+        )
+    )
+    if user_message is None:
+        raise NotFoundError("需要重试的群聊消息不存在")
+    existing = await session.scalar(
+        select(LobbyMessage)
+        .where(
+            LobbyMessage.trip_id == trip_id,
+            LobbyMessage.reply_to_id == message_id,
+            LobbyMessage.kind == "agent",
+        )
+        .order_by(LobbyMessage.id.desc())
+    )
+    if existing is not None:
+        return ApiResponse(data=[await _lobby_message_read(session, existing)])
+    try:
+        agent_message = await _generate_lobby_agent_message(
+            session,
+            trip_id=trip_id,
+            user_message=user_message,
+            user_id=current_user.id,
+        )
+    except AppError as exc:
+        await session.rollback()
+        exc.detail = {"user_message_id": message_id, "agent_error": exc.detail}
+        raise
+    session.add(agent_message)
+    await session.commit()
+    await session.refresh(agent_message)
+    return ApiResponse(data=[await _lobby_message_read(session, agent_message)])
 
 
 @router.post("/trips/{trip_id}/messages/read", response_model=ApiResponse[dict[str, int]])

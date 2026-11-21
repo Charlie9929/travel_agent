@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ImagePlus, X } from "lucide-react";
 import { ModalSheet } from "./ModalSheet";
+import { ProcessingLabel } from "./ProcessingLabel";
 import { ProcessingSteps } from "./ProcessingSteps";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -67,7 +68,7 @@ export function GenerationInputSheet({
         {error && <p className="form-error">{error}</p>}
       </section>}
       {loading && <ProcessingSteps steps={processingSteps} activeStep={processingStep} />}
-      <button className="primary-button full-button" disabled={loading || recognizing || (questions.length ? !answer.trim() : !answer.trim() && !guideText.trim())}>{questions.length ? "回答并继续" : "让 Agent 理解需求并生成"}</button>
+      <button className="primary-button full-button" disabled={loading || recognizing || (questions.length ? !answer.trim() : !answer.trim() && !guideText.trim())}>{loading ? <ProcessingLabel /> : questions.length ? "回答并继续" : "让 Agent 理解需求并生成"}</button>
     </form>
   </ModalSheet>;
 }

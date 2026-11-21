@@ -28,6 +28,8 @@ export function CreateTripSheet({ title = "创建第一场旅行", closable = fa
   const [travelerCount, setTravelerCount] = useState("1");
   const [budget, setBudget] = useState("");
 
+  const invalidDateRange = Boolean(startDate && endDate && endDate < startDate);
+
   useEffect(() => {
     let active = true;
     setDistrictLoading(true);
@@ -60,6 +62,7 @@ export function CreateTripSheet({ title = "创建第一场旅行", closable = fa
       <p className="sheet-intro">先建立一个真实行程，之后就可以邀请同行者并和 Agent 协作。</p>
       <form className="auth-form" onSubmit={(event) => {
         event.preventDefault();
+        if (invalidDateRange) return;
         const destination = destinationCities.find((city) => city.adcode === destinationCity);
         const origin = originCities.find((city) => city.adcode === originCity);
         if (!destination || !origin) return;
@@ -112,9 +115,14 @@ export function CreateTripSheet({ title = "创建第一场旅行", closable = fa
         </fieldset>
         {districtError && <p className="form-error">城市列表加载失败：{districtError}</p>}
         <p className="field-hint">想重点游玩某个区，可在下一步的旅行偏好中说明。</p>
-        <div className="date-fields"><label className="field-label">开始日期<input className="text-input" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label><label className="field-label">结束日期<input className="text-input" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></label></div>
+        <div className="date-fields date-range-picker">
+          <label className="field-label">开始日期<input className="text-input" type="date" value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} required /></label>
+          <label className="field-label">结束日期<input className="text-input" type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} required /></label>
+          <div className={`date-range-band ${startDate && endDate && !invalidDateRange ? "is-active" : ""}`} aria-hidden="true"><span /></div>
+        </div>
+        {invalidDateRange && <p className="form-error">结束日期不能早于开始日期，请重新选择。</p>}
         <div className="date-fields"><label className="field-label">人数<input className="text-input" type="number" min="1" value={travelerCount} onChange={(event) => setTravelerCount(event.target.value)} required /></label><label className="field-label">总预算<input className="text-input" type="number" min="0" step="0.01" value={budget} onChange={(event) => setBudget(event.target.value)} placeholder="可选" /></label></div>
-        <button className="primary-button full-button" disabled={districtLoading || Boolean(districtError)}>创建行程</button>
+        <button className="primary-button full-button" disabled={districtLoading || Boolean(districtError) || invalidDateRange}>创建行程</button>
       </form>
     </ModalSheet>
   );

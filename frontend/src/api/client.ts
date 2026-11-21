@@ -322,6 +322,7 @@ export const api = {
         return { ...result, items: result.items.map(mapLobbyMessage) };
       },
       send: async (tripId: number, content: string, askAgent = false) => (await request<ApiLobbyMessage[]>(`/trips/${tripId}/messages`, { method: "POST", body: JSON.stringify({ content, ask_agent: askAgent }) })).map(mapLobbyMessage),
+      retryAgent: async (tripId: number, messageId: number) => (await request<ApiLobbyMessage[]>(`/trips/${tripId}/messages/${messageId}/agent`, { method: "POST" })).map(mapLobbyMessage),
       markRead: (tripId: number, messageId: number) => request<{ last_read_message_id: number }>(`/trips/${tripId}/messages/read`, { method: "POST", body: JSON.stringify({ last_read_message_id: messageId }) }),
     },
     agent: {

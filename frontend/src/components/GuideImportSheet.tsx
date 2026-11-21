@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ImagePlus, X } from "lucide-react";
 import { ModalSheet } from "./ModalSheet";
+import { ProcessingLabel } from "./ProcessingLabel";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
@@ -66,12 +67,12 @@ export function GuideImportSheet({
           <div><strong>攻略截图</strong><small>最多选择 9 张 JPEG/PNG 图片，单张不超过 5MB</small></div>
           <label className="secondary-button guide-image-picker"><ImagePlus size={17} />选择截图<input type="file" accept="image/jpeg,image/png" multiple onChange={(event) => { addImages(event.target.files); event.currentTarget.value = ""; }} /></label>
           {!!images.length && <div className="guide-image-list">{images.map((image, index) => <span key={`${image.name}-${index}`}>{image.name}<button type="button" aria-label={`移除 ${image.name}`} onClick={() => setImages((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button></span>)}</div>}
-          {!!images.length && <button type="button" className="secondary-button full-button" disabled={recognizing || loading} onClick={() => void recognizeImages()}>{recognizing ? progress : `识别 ${images.length} 张截图`}</button>}
+          {!!images.length && <button type="button" className="secondary-button full-button" disabled={recognizing || loading} onClick={() => void recognizeImages()}>{recognizing ? <ProcessingLabel label="正在识别" /> : `识别 ${images.length} 张截图`}</button>}
           {progress && !recognizing && <small className="guide-ocr-status">{progress}</small>}
           {error && <p className="form-error">{error}</p>}
         </section>
         <label className="field-label">攻略文字<textarea className="text-area guide-text-area" value={text} onChange={(event) => setText(event.target.value)} placeholder="也可以直接粘贴攻略文字；截图识别完成后，请先校对地点、时间和价格。" /></label>
-        <button className="primary-button full-button" disabled={loading || recognizing || !text.trim()}>{loading ? "正在提取候选活动…" : "提取候选活动"}</button>
+        <button className="primary-button full-button" disabled={loading || recognizing || !text.trim()}>{loading ? <ProcessingLabel /> : "提取候选活动"}</button>
       </form>
     </ModalSheet>
   );
