@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, CalendarDays } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ApiDistrictProvince } from "../api/client";
 import { ModalSheet } from "./ModalSheet";
 
@@ -13,6 +14,133 @@ export type CreateTripValues = {
   traveler_count: number;
   total_budget?: number;
 };
+
+type DateField = "start" | "end";
+
+function parseDateValue(value: string) {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  return Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)
+    ? new Date(year, month - 1, day)
+    : null;
+}
+
+function dateValue(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function displayDate(value: string) {
+  return value ? value.replaceAll("-", "/") : "请选择日期";
+}
+
+function calendarDays(month: Date) {
+  const first = new Date(month.getFullYear(), month.getMonth(), 1);
+  const mondayOffset = (first.getDay() + 6) % 7;
+  return Array.from({ length: 42 }, (_, index) => new Date(month.getFullYear(), month.getMonth(), index - mondayOffset + 1));
+}
+
+function DateRangePicker({
+  startDate,
+  endDate,
+  onStartChange,
+  onEndChange,
+}: {
+  startDate: string;
+  endDate: string;
+  onStartChange: (value: string) => void;
+  onEndChange: (value: string) => void;
+}) {
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const [openField, setOpenField] = useState<DateField | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const start = parseDateValue(startDate);
+  const end = parseDateValue(endDate);
+  const monthLabel = new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(calendarMonth);
+
+  useEffect(() => {
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (openField && pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpenField(null);
+    };
+    window.addEventListener("pointerdown", closeOnOutsideClick);
+    return () => window.removeEventListener("pointerdown", closeOnOutsideClick);
+  }, [openField]);
+
+  const openCalendar = (field: DateField) => {
+    const selected = parseDateValue(field === "start" ? startDate : endDate);
+    const fallback = parseDateValue(field === "end" ? startDate : endDate);
+    const target = selected ?? fallback ?? new Date();
+    setCalendarMonth(new Date(target.getFullYear(), target.getMonth(), 1));
+    setOpenField(field);
+  };
+
+  const selectDate = (date: Date) => {
+    const value = dateValue(date);
+    if (openField === "end" && startDate && value < startDate) return;
+    if (openField === "start") {
+      onStartChange(value);
+      if (endDate && value > endDate) {
+        onEndChange("");
+        setOpenField("end");
+        setCalendarMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+      } else if (!endDate) {
+        setOpenField("end");
+      } else {
+        setOpenField(null);
+      }
+      return;
+    }
+    if (openField === "end") {
+      if (!startDate) {
+        onStartChange(value);
+        setOpenField("end");
+        return;
+      }
+      onEndChange(value);
+      setOpenField(null);
+    }
+  };
+
+  return (
+    <div className="date-range-picker" ref={pickerRef}>
+      <label className="field-label">开始日期
+        <button type="button" className={`date-input-button ${openField === "start" ? "is-open" : ""}`} onClick={() => openCalendar("start")}>
+          <span>{displayDate(startDate)}</span><CalendarDays size={19} />
+        </button>
+      </label>
+      <label className="field-label">结束日期
+        <button type="button" className={`date-input-button ${openField === "end" ? "is-open" : ""}`} onClick={() => openCalendar("end")}>
+          <span>{displayDate(endDate)}</span><CalendarDays size={19} />
+        </button>
+      </label>
+      {openField && <div className="date-calendar-popover" role="dialog" aria-label="选择旅行日期范围">
+        <div className="date-calendar-header">
+          <button type="button" className="date-calendar-nav" aria-label="上一个月" onClick={() => setCalendarMonth((current) => new Date(current.getFullYear(), current.getMonth() - 1, 1))}><ChevronLeft size={19} /></button>
+          <strong>{monthLabel}</strong>
+          <button type="button" className="date-calendar-nav" aria-label="下一个月" onClick={() => setCalendarMonth((current) => new Date(current.getFullYear(), current.getMonth() + 1, 1))}><ChevronRight size={19} /></button>
+        </div>
+        <div className="date-calendar-weekdays">{["一", "二", "三", "四", "五", "六", "日"].map((day) => <span key={day}>{day}</span>)}</div>
+        <div className="date-calendar-grid">
+          {calendarDays(calendarMonth).map((day) => {
+            const value = dateValue(day);
+            const outsideMonth = day.getMonth() !== calendarMonth.getMonth();
+            const beforeStart = openField === "end" && Boolean(startDate) && value < startDate;
+            const isStart = value === startDate;
+            const isEnd = value === endDate;
+            const isInRange = Boolean(startDate && endDate && value > startDate && value < endDate);
+            return <button
+              type="button"
+              key={value}
+              className={`date-calendar-day ${outsideMonth ? "is-outside" : ""} ${beforeStart ? "is-disabled" : ""} ${isInRange ? "is-in-range" : ""} ${isStart ? "is-start" : ""} ${isEnd ? "is-end" : ""}`}
+              disabled={outsideMonth || beforeStart}
+              onClick={() => selectDate(day)}
+            >{day.getDate()}</button>;
+          })}
+        </div>
+        <small className="date-calendar-hint">{openField === "start" ? "请选择开始日期" : "请选择结束日期"}</small>
+      </div>}
+    </div>
+  );
+}
 
 export function CreateTripSheet({ title = "创建第一场旅行", closable = false, onClose, onSubmit }: { title?: string; closable?: boolean; onClose?: () => void; onSubmit: (values: CreateTripValues) => void }) {
   const [tripTitle, setTripTitle] = useState("");
@@ -115,11 +243,7 @@ export function CreateTripSheet({ title = "创建第一场旅行", closable = fa
         </fieldset>
         {districtError && <p className="form-error">城市列表加载失败：{districtError}</p>}
         <p className="field-hint">想重点游玩某个区，可在下一步的旅行偏好中说明。</p>
-        <div className="date-fields date-range-picker">
-          <label className="field-label">开始日期<input className="text-input" type="date" value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} required /></label>
-          <label className="field-label">结束日期<input className="text-input" type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} required /></label>
-          <div className={`date-range-band ${startDate && endDate && !invalidDateRange ? "is-active" : ""}`} aria-hidden="true"><span /></div>
-        </div>
+        <DateRangePicker startDate={startDate} endDate={endDate} onStartChange={setStartDate} onEndChange={setEndDate} />
         {invalidDateRange && <p className="form-error">结束日期不能早于开始日期，请重新选择。</p>}
         <div className="date-fields"><label className="field-label">人数<input className="text-input" type="number" min="1" value={travelerCount} onChange={(event) => setTravelerCount(event.target.value)} required /></label><label className="field-label">总预算<input className="text-input" type="number" min="0" step="0.01" value={budget} onChange={(event) => setBudget(event.target.value)} placeholder="可选" /></label></div>
         <button className="primary-button full-button" disabled={districtLoading || Boolean(districtError) || invalidDateRange}>创建行程</button>
