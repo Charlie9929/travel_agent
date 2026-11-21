@@ -560,7 +560,70 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
   border-radius: 16px;
 }
 
+/* Keep every card's content inside its own box at narrow and wide widths. */
+.page:not(.workbench-page) .trip-overview,
+.page:not(.workbench-page) .profile-summary,
+.page:not(.workbench-page) .conversation-card,
+.page:not(.workbench-page) .shared-card,
+.page:not(.workbench-page) .private-entry,
+.page:not(.workbench-page) .function-row,
+.page:not(.workbench-page) .tool-quick-actions button {
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.page:not(.workbench-page) .trip-overview b {
+  right: 20px;
+}
+
+.page:not(.workbench-page) .list-row > span,
+.page:not(.workbench-page) .private-entry > span:not(.entry-arrow),
+.page:not(.workbench-page) .profile-summary > div {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.page:not(.workbench-page) .list-row > span > strong,
+.page:not(.workbench-page) .list-row > span > small,
+.page:not(.workbench-page) .list-row > strong,
+.page:not(.workbench-page) .private-entry strong,
+.page:not(.workbench-page) .private-entry small,
+.page:not(.workbench-page) .profile-summary strong,
+.page:not(.workbench-page) .profile-summary small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page:not(.workbench-page) .tool-quick-actions button {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.page:not(.workbench-page) .tool-quick-actions button > strong,
+.page:not(.workbench-page) .tool-quick-actions button > small {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page:not(.workbench-page) .shared-card p,
+.page:not(.workbench-page) .conversation-card p {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 @media (min-width: 768px) {
+  .page-functions .trip-overview,
+  .page-functions .tool-quick-actions,
+  .page-functions .function-list {
+    width: min(900px, calc(100% - 48px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
   .page-home .profile-summary,
   .page-home .conversation-card,
   .page-home .memory-row,
