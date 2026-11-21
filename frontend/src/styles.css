@@ -371,25 +371,37 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
   position: relative;
   isolation: isolate;
   background-color: #f5f8f4;
-  background-repeat: no-repeat;
-  background-position: top center;
-  background-size: 100% 330px, auto 330px;
+  background-image: none;
 }
 
-.page-trip-list {
+.page:not(.workbench-page)::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 0;
+  height: 330px;
+  content: "";
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  pointer-events: none;
+}
+
+.page-trip-list::before {
   background-image: linear-gradient(180deg, rgba(245, 250, 246, .18) 0%, rgba(245, 250, 246, .76) 220px, #f5f8f4 330px), url("./assets/travel/mountain-road.webp");
 }
 
-.page-functions {
+.page-functions::before {
   background-image: linear-gradient(180deg, rgba(247, 250, 247, .2) 0%, rgba(247, 250, 247, .78) 220px, #f5f8f4 330px), url("./assets/travel/coastal-walk.webp");
 }
 
-.page-home {
+.page-home::before {
   background-image: linear-gradient(180deg, rgba(246, 250, 247, .28) 0%, rgba(246, 250, 247, .86) 220px, #f5f8f4 330px), url("./assets/travel/home-journey.webp");
 }
 
-.page-lobby-list,
-.page-lobby {
+.page-lobby-list::before,
+.page-lobby::before {
   background-image: linear-gradient(180deg, rgba(244, 249, 245, .3) 0%, rgba(244, 249, 245, .88) 220px, #f5f8f4 330px), url("./assets/travel/lobby-old-town.webp");
 }
 
@@ -548,6 +560,25 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
   border-radius: 16px;
 }
 
+@media (min-width: 768px) {
+  .page-home .profile-summary,
+  .page-home .conversation-card,
+  .page-home .memory-row,
+  .page-lobby .shared-card,
+  .page-lobby .discussion-row,
+  .page-lobby .private-entry {
+    width: min(900px, calc(100% - 48px));
+    margin-right: auto;
+    margin-left: auto;
+  }
+
+  .page-functions .function-row {
+    width: 100%;
+    margin-right: 0;
+    margin-left: 0;
+  }
+}
+
 .modal-sheet {
   border: 1px solid rgba(255, 255, 255, .76);
   background: var(--glass-surface-strong);
@@ -623,8 +654,8 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
 }
 
 @media (max-width: 767px) {
-  .page:not(.workbench-page) {
-    background-size: 100% 300px, auto 300px;
+  .page:not(.workbench-page)::before {
+    height: 300px;
   }
 
   .page:not(.workbench-page) .page-header {
