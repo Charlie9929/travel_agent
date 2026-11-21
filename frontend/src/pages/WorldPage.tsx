@@ -44,6 +44,8 @@ type Segment = {
   routes: Record<string, RouteChoice>;
   isDayStart?: boolean;
   loading?: boolean;
+  routesLoading?: boolean;
+  routeDetailError?: string;
   error?: string;
 };
 type DayContext = {
@@ -345,6 +347,7 @@ export function WorldPage({
   const routeLoadKeyRef = useRef("");
   const loadingDaysRef = useRef(new Set<number>());
   const loadedDaysRef = useRef(new Set<number>());
+  const routeRequestsRef = useRef(new Set<string>());
 
   const currentDay = useMemo(
     () =>
@@ -479,6 +482,7 @@ export function WorldPage({
               to.latitude,
               to.longitude,
               cityCode,
+              "drive",
             );
             nextSegments.push({
               ...pending,
@@ -574,6 +578,83 @@ export function WorldPage({
   const dayStartSegment =
     segments.find((segment) => segment.isDayStart) ?? dayStartFallback;
 
+  const loadAdditionalRoutes = useCallback((segment: Segment) => {
+    const key = `${selectedDay}:${segmentKey(segment)}`;
+    const hasAllModes = ROUTE_MODES.every((mode) => segment.routes[mode]);
+    if (hasAllModes || routeRequestsRef.current.has(key)) return;
+    if (
+      segment.from.latitude == null ||
+      segment.from.longitude == null ||
+      segment.to.latitude == null ||
+      segment.to.longitude == null
+    ) return;
+
+    routeRequestsRef.current.add(key);
+    setDayContexts((current) => ({
+      ...current,
+      [selectedDay]: {
+        ...current[selectedDay],
+        segments: (current[selectedDay]?.segments ?? []).map((item) =>
+          segmentKey(item) === segmentKey(segment)
+            ? { ...item, routesLoading: true, routeDetailError: "" }
+            : item,
+        ),
+      },
+    }));
+
+    void api.map
+      .route(
+        segment.from.latitude,
+        segment.from.longitude,
+        segment.to.latitude,
+        segment.to.longitude,
+        selectedContext?.poi?.adcode ?? undefined,
+      )
+      .then((result) => {
+        setDayContexts((current) => ({
+          ...current,
+          [selectedDay]: {
+            ...current[selectedDay],
+            segments: (current[selectedDay]?.segments ?? []).map((item) =>
+              segmentKey(item) === segmentKey(segment)
+                ? {
+                    ...item,
+                    routes: (result.routes ?? {}) as Record<string, RouteChoice>,
+                    routesLoading: false,
+                    routeDetailError: "",
+                  }
+                : item,
+            ),
+          },
+        }));
+      })
+      .catch((error) => {
+        setDayContexts((current) => ({
+          ...current,
+          [selectedDay]: {
+            ...current[selectedDay],
+            segments: (current[selectedDay]?.segments ?? []).map((item) =>
+              segmentKey(item) === segmentKey(segment)
+                ? {
+                    ...item,
+                    routesLoading: false,
+                    routeDetailError: (error as Error).message,
+                  }
+                : item,
+            ),
+          },
+        }));
+      })
+      .finally(() => {
+        routeRequestsRef.current.delete(key);
+      });
+  }, [selectedContext?.poi?.adcode, selectedDay]);
+
+  const openTransportDetails = (segment: Segment) => {
+    setActiveSegment(segment);
+    loadAdditionalRoutes(segment);
+  };
+
   const selectedActivity =
     currentDay.find((item) => item.id === selectedActivityId) ?? currentDay[0];
   const activeSegmentMode = activeSegment
@@ -654,7 +735,7 @@ export function WorldPage({
     return (
       <button
         className={`transport-summary-button ${segment.isDayStart ? "is-day-start" : ""}`}
-        onClick={() => setActiveSegment(segment)}
+        onClick={() => openTransportDetails(segment)}
       >
         <span className="transport-summary-icon">
           {selectedMode ? routeIcon(selectedMode, 16) : <Route size={16} />}
@@ -668,10 +749,10 @@ export function WorldPage({
             {selectedRoute?.available
               ? `${formatDuration(selectedRoute.duration_min)} · ${formatDistance(selectedRoute.distance_m)}`
               : segment.loading
-                ? "正在查询四种交通方式…"
+                ? "正在查询路线…"
                 : segment.error
                   ? "路线暂不可用，点击查看"
-                  : "查看四种交通方式"}
+                  : "查看交通方式"}
           </small>
         </span>
         <ChevronRight size={16} />
@@ -1012,6 +1093,12 @@ export function WorldPage({
             <span>起</span><strong>{activeSegment.from.title}</strong>
             <span>终</span><strong>{activeSegment.to.title}</strong>
           </div>
+          {activeSegment.routesLoading && (
+            <p className="sheet-intro">正在查询其他交通方式，稍等一下就好。</p>
+          )}
+          {activeSegment.routeDetailError && (
+            <p className="sheet-error">其他交通方式暂时无法查询，可以先使用已显示的路线。</p>
+          )}
           <div className="transport-mode-list">
             {ROUTE_MODES.map((mode) => {
               const route = activeSegment.routes[mode];
@@ -1029,6 +1116,8 @@ export function WorldPage({
                   <span>
                     {available
                       ? `${formatDistance(route.distance_m)} · ${formatDuration(route.duration_min)}`
+                      : activeSegment.routesLoading
+                        ? "正在查询…"
                       : "暂无路线"}
                   </span>
                 </button>

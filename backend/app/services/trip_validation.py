@@ -272,6 +272,10 @@ async def enrich_route_checks(
                         to_lng=float(destination["lng"]),
                         to_lat=float(destination["lat"]),
                         city_code=city_code,
+                        # One reliable route is enough for generation-time
+                        # scheduling. Other modes are loaded on demand by the
+                        # itinerary page.
+                        modes={"drive"},
                     )
                 except AppError as exc:
                     warnings.append(

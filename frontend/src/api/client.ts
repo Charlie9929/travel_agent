@@ -273,7 +273,7 @@ export const api = {
   map: {
     districts: () => loadDistricts(),
     poi: (city: string, keyword: string) => request<{ items: ApiPoi[]; provider: string; queried_at: string }>(`/map/poi${queryString({ city, keyword })}`),
-    route: (fromLat: number, fromLng: number, toLat: number, toLng: number, cityCode?: string) => request<JsonObject>(`/map/route${queryString({ from_lat: fromLat, from_lng: fromLng, to_lat: toLat, to_lng: toLng, city_code: cityCode })}`),
+    route: (fromLat: number, fromLng: number, toLat: number, toLng: number, cityCode?: string, mode?: "walk" | "bike" | "drive" | "transit") => request<JsonObject>(`/map/route${queryString({ from_lat: fromLat, from_lng: fromLng, to_lat: toLat, to_lng: toLng, city_code: cityCode, mode })}`),
   },
   weather: (cityCode: string, date: string) => request<ApiWeather>(`/weather${queryString({ city_code: cityCode, date })}`),
   users: {

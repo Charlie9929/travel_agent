@@ -224,6 +224,7 @@ class AmapClient:
         to_lng: float,
         to_lat: float,
         city_code: str | None = None,
+        modes: set[str] | None = None,
     ) -> dict[str, Any]:
         self._require_key()
         origin = f"{from_lng:.6f},{from_lat:.6f}"
@@ -236,9 +237,12 @@ class AmapClient:
                 {"show_fields": "cost,polyline", "strategy": 32},
             ),
         }
+        requested_modes = set(specs) if modes is None else set(modes) & set(specs)
         results: dict[str, Any] = {}
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             for mode, (path, extra) in specs.items():
+                if mode not in requested_modes:
+                    continue
                 await self._wait_for_rate_slot()
                 params = {
                     "key": self.api_key,
@@ -253,7 +257,7 @@ class AmapClient:
                 except httpx.HTTPError:
                     results[mode] = {"available": False}
 
-            if city_code:
+            if city_code and (modes is None or "transit" in modes):
                 city_code = canonical_city_adcode(city_code)
                 try:
                     await self._wait_for_rate_slot()
@@ -272,7 +276,7 @@ class AmapClient:
                     results["transit"] = self._normalize_route(response.json(), transit=True)
                 except httpx.HTTPError:
                     results["transit"] = {"available": False}
-            else:
+            elif modes is None or "transit" in modes:
                 results["transit"] = {"available": False, "reason": "city_code_required"}
         return {"routes": results, "provider": "amap", "queried_at": datetime.now(UTC)}
 

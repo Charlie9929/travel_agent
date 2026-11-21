@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from fastapi import APIRouter, Query
 
@@ -46,6 +47,7 @@ async def route(
     to_lat: float = Query(ge=-90, le=90),
     to_lng: float = Query(ge=-180, le=180),
     city_code: str | None = Query(default=None),
+    mode: Literal["walk", "bike", "drive", "transit"] | None = Query(default=None),
 ) -> ApiResponse[dict]:
     del current_user
     return ApiResponse(
@@ -55,5 +57,6 @@ async def route(
             to_lng=to_lng,
             to_lat=to_lat,
             city_code=city_code,
+            modes={mode} if mode else None,
         )
     )
