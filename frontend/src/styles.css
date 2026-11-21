@@ -352,3 +352,286 @@ button:focus-visible { outline: 2px solid #34745b; outline-offset: 2px; }
 }
 
 .chat-retry-button { margin-top: 8px; padding: 4px 0; background: transparent; color: var(--route); font-size: 12px; text-decoration: underline; }
+
+/* Natural travel editorial visual layer */
+:root {
+  --glass-surface: rgba(255, 255, 255, .68);
+  --glass-surface-strong: rgba(255, 255, 255, .86);
+  --glass-line: rgba(255, 255, 255, .72);
+  --glass-shadow: 0 12px 32px rgba(40, 78, 61, .12);
+  --glass-blur: blur(16px) saturate(125%);
+  --ambient-wash: rgba(244, 250, 245, .92);
+}
+
+.app-frame {
+  background: #f1f6f0;
+}
+
+.page:not(.workbench-page) {
+  position: relative;
+  isolation: isolate;
+  background-color: #f5f8f4;
+  background-repeat: no-repeat;
+  background-position: top center;
+  background-size: 100% 330px, auto 330px;
+}
+
+.page-trip-list {
+  background-image: linear-gradient(180deg, rgba(245, 250, 246, .18) 0%, rgba(245, 250, 246, .76) 220px, #f5f8f4 330px), url("./assets/travel/mountain-road.webp");
+}
+
+.page-functions {
+  background-image: linear-gradient(180deg, rgba(247, 250, 247, .2) 0%, rgba(247, 250, 247, .78) 220px, #f5f8f4 330px), url("./assets/travel/coastal-walk.webp");
+}
+
+.page-home {
+  background-image: linear-gradient(180deg, rgba(246, 250, 247, .28) 0%, rgba(246, 250, 247, .86) 220px, #f5f8f4 330px), url("./assets/travel/home-journey.webp");
+}
+
+.page-lobby-list,
+.page-lobby {
+  background-image: linear-gradient(180deg, rgba(244, 249, 245, .3) 0%, rgba(244, 249, 245, .88) 220px, #f5f8f4 330px), url("./assets/travel/lobby-old-town.webp");
+}
+
+.page:not(.workbench-page) > * {
+  position: relative;
+  z-index: 1;
+}
+
+.page:not(.workbench-page) .page-header {
+  padding-top: 4px;
+}
+
+.page-trip-list .trip-list-card,
+.page-lobby-list .lobby-thread,
+.page-lobby .member-card,
+.page-lobby .shared-card,
+.page-lobby .discussion-row,
+.page-lobby .private-entry,
+.page-functions .tool-quick-actions button,
+.page-functions .function-row,
+.page-home .profile-summary,
+.page-home .conversation-card,
+.page-home .memory-row {
+  border: 1px solid var(--glass-line);
+  background: var(--glass-surface);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.page-trip-list .trip-list-card,
+.page-lobby .member-card,
+.page-lobby .shared-card,
+.page-lobby .private-entry,
+.page-home .profile-summary,
+.page-home .conversation-card {
+  border-radius: 20px;
+}
+
+.page-trip-list .trip-list-card {
+  min-height: 96px;
+  transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+}
+
+.page-trip-list .trip-list-card:hover,
+.page-lobby .member-card:hover,
+.page-lobby .private-entry:hover,
+.page-home .conversation-card:hover {
+  background: rgba(255, 255, 255, .8);
+  box-shadow: 0 16px 36px rgba(40, 78, 61, .16);
+  transform: translateY(-1px);
+}
+
+.page-trip-list .trip-list-card.is-history {
+  background: rgba(246, 248, 245, .72);
+}
+
+.page-lobby-list .lobby-thread-list {
+  border-top: 0;
+}
+
+.page-lobby-list .lobby-thread {
+  overflow: hidden;
+  margin-bottom: 12px;
+  border-radius: 20px;
+}
+
+.page-lobby-list .lobby-thread-main,
+.page-lobby-list .lobby-thread-manage {
+  background: transparent;
+}
+
+.page-lobby-list .lobby-thread-main {
+  min-height: 86px;
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.page-lobby-list .lobby-thread-manage {
+  margin: 0;
+  padding: 7px 14px 10px 74px;
+  border-top: 1px solid rgba(255, 255, 255, .48);
+}
+
+.page-lobby .member-grid {
+  gap: 14px;
+}
+
+.page-lobby .member-card {
+  min-height: 82px;
+}
+
+.page-lobby .shared-card,
+.page-lobby .private-entry {
+  width: calc(100% - 48px);
+  margin-right: 24px;
+  margin-left: 24px;
+}
+
+.page-lobby .discussion-row {
+  width: calc(100% - 48px);
+  margin-top: 12px;
+  margin-right: 24px;
+  margin-left: 24px;
+  border-radius: 16px;
+}
+
+.page-lobby .private-entry {
+  margin-top: 14px;
+  margin-bottom: 10px;
+}
+
+.page-functions .trip-overview {
+  padding: 20px;
+  border: 1px solid var(--glass-line);
+  border-radius: 22px;
+  background: var(--glass-surface);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.page-functions .function-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.page-functions .function-row {
+  width: calc(100% - 48px);
+  min-height: 76px;
+  margin-right: 24px;
+  margin-left: 24px;
+  border-radius: 18px;
+}
+
+.page-functions .closed-feature {
+  border-top-color: rgba(52, 116, 91, .18);
+}
+
+.page-home .profile-summary {
+  border-radius: 22px;
+}
+
+.page-home .conversation-card {
+  width: calc(100% - 48px);
+  margin-right: 24px;
+  margin-left: 24px;
+  text-align: left;
+}
+
+.page-home .memory-row {
+  width: calc(100% - 48px);
+  margin-right: 24px;
+  margin-left: 24px;
+  border-radius: 16px;
+}
+
+.modal-sheet {
+  border: 1px solid rgba(255, 255, 255, .76);
+  background: var(--glass-surface-strong);
+  box-shadow: 0 -18px 48px rgba(31, 65, 48, .16);
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.bottom-nav {
+  border-top-color: rgba(255, 255, 255, .7);
+  background: rgba(255, 255, 255, .88);
+  box-shadow: 0 -8px 24px rgba(40, 78, 61, .08);
+  backdrop-filter: blur(16px) saturate(120%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%);
+}
+
+.workbench-itinerary-panel {
+  border-top: 1px solid rgba(255, 255, 255, .76);
+  background: var(--glass-surface-strong);
+  backdrop-filter: blur(18px) saturate(120%);
+  -webkit-backdrop-filter: blur(18px) saturate(120%);
+}
+
+.map-context-strip {
+  background: rgba(255, 255, 255, .78);
+}
+
+.action-pill {
+  border: 1px solid rgba(255, 255, 255, .72);
+  box-shadow: 0 8px 24px rgba(175, 126, 35, .12);
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .page-trip-list .trip-list-card,
+  .page-lobby-list .lobby-thread,
+  .page-lobby .member-card,
+  .page-lobby .shared-card,
+  .page-lobby .discussion-row,
+  .page-lobby .private-entry,
+  .page-functions .tool-quick-actions button,
+  .page-functions .function-row,
+  .page-functions .trip-overview,
+  .page-home .profile-summary,
+  .page-home .conversation-card,
+  .page-home .memory-row,
+  .modal-sheet,
+  .bottom-nav,
+  .workbench-itinerary-panel {
+    background: rgba(255, 255, 255, .96);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .page-trip-list .trip-list-card,
+  .page-lobby-list .lobby-thread,
+  .page-lobby .member-card,
+  .page-lobby .shared-card,
+  .page-lobby .discussion-row,
+  .page-lobby .private-entry,
+  .page-functions .tool-quick-actions button,
+  .page-functions .function-row,
+  .page-functions .trip-overview,
+  .page-home .profile-summary,
+  .page-home .conversation-card,
+  .page-home .memory-row,
+  .modal-sheet,
+  .bottom-nav,
+  .workbench-itinerary-panel {
+    background: rgba(255, 255, 255, .96);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .page:not(.workbench-page) {
+    background-size: 100% 300px, auto 300px;
+  }
+
+  .page:not(.workbench-page) .page-header {
+    padding-top: 2px;
+  }
+
+  .workbench-itinerary-panel {
+    background: rgba(255, 255, 255, .9);
+  }
+}

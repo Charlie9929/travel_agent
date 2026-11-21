@@ -52,6 +52,32 @@ function personalPreferencesKey(userId: number | null) {
   return `travel-agent-personal-preferences-${userId ?? "guest"}`;
 }
 
+const CACHED_USER_KEY = "travel-agent-cached-user-v1";
+const CACHED_TRIPS_KEY = "travel-agent-cached-trips-v1";
+const WORKSPACE_CACHE_PREFIX = "travel-agent-workspace-cache-v1-";
+
+function readCachedValue<T>(key: string): T | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null") as T | null;
+    return value ?? null;
+  } catch {
+    localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function cachedWorkspaceKey(tripId: number) {
+  return `${WORKSPACE_CACHE_PREFIX}${tripId}`;
+}
+
+function readCachedWorkspace(tripId: number | null) {
+  return tripId ? readCachedValue<Workspace>(cachedWorkspaceKey(tripId)) : null;
+}
+
+function persistWorkspace(workspace: Workspace) {
+  localStorage.setItem(cachedWorkspaceKey(workspace.tripId), JSON.stringify(workspace));
+}
+
 const generationSteps = ["正在读取需求", "正在构思行程", "正在生成计划"];
 
 function shareCodeFromPath() {
@@ -156,18 +182,22 @@ function specificErrorMessage(error: unknown) {
 
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>("world");
-  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspace, setWorkspace] = useState<Workspace | null>(() => {
+    if (!hasToken()) return null;
+    const tripId = Number(localStorage.getItem("travel-agent-selected-trip")) || null;
+    return readCachedWorkspace(tripId);
+  });
   const [requirements, setRequirements] = useState<ApiRequirement[]>([]);
   const [tripNote, setTripNote] = useState("");
   const [personalPreferences, setPersonalPreferences] = useState("");
-  const [trips, setTrips] = useState<ApiTrip[]>([]);
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [trips, setTrips] = useState<ApiTrip[]>(() => readCachedValue<ApiTrip[]>(CACHED_TRIPS_KEY) ?? []);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => hasToken() ? readCachedValue<AuthUser>(CACHED_USER_KEY) : null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authOpen, setAuthOpen] = useState(false);
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [createTripOpen, setCreateTripOpen] = useState(false);
-  const [tripDetailOpen, setTripDetailOpen] = useState(false);
+  const [tripDetailOpen, setTripDetailOpen] = useState(() => Boolean(hasToken() && readCachedValue<AuthUser>(CACHED_USER_KEY) && workspace));
   const [lobbyDetailOpen, setLobbyDetailOpen] = useState(false);
   const [tripSettingsOpen, setTripSettingsOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -206,9 +236,26 @@ function App() {
   const [notice, setNotice] = useState("");
   const [archivedActionNoticeOpen, setArchivedActionNoticeOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [syncIndicatorVisible, setSyncIndicatorVisible] = useState(false);
   const [conflict, setConflict] = useState<ConflictResolution | null>(null);
   const lobbyMessagesRef = useRef<LobbyMessage[]>([]);
   const localMessageIdRef = useRef(-1);
+  const authUserRef = useRef<AuthUser | null>(authUser);
+  const tripsRef = useRef<ApiTrip[]>(trips);
+  const workspaceRef = useRef<Workspace | null>(workspace);
+
+  useEffect(() => { authUserRef.current = authUser; }, [authUser]);
+  useEffect(() => { tripsRef.current = trips; }, [trips]);
+  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
+
+  useEffect(() => {
+    if (!loading) {
+      setSyncIndicatorVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setSyncIndicatorVisible(true), 450);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
 
   useEffect(() => {
     lobbyMessagesRef.current = lobbyMessages;
@@ -217,6 +264,7 @@ function App() {
   const handleUnauthorized = useCallback(() => {
     api.auth.logout();
     localStorage.removeItem("travel-agent-selected-trip");
+    localStorage.removeItem(CACHED_USER_KEY);
     setAuthUser(null);
     setWorkspace(null);
     setTrips([]);
@@ -226,11 +274,22 @@ function App() {
   const refreshWorkspace = useCallback(async (preferredTripId?: number) => {
     setLoading(true);
     try {
-      const user = await api.auth.me();
-      setAuthUser(user);
+      const currentUser = authUserRef.current;
+      const currentWorkspace = workspaceRef.current;
+      const canUseFastRefresh = Boolean(
+        preferredTripId &&
+        currentWorkspace?.tripId === preferredTripId &&
+        currentUser &&
+        tripsRef.current.length,
+      );
+      let user = currentUser;
+      let items = tripsRef.current;
       let joinedTripId: number | undefined;
       const shareCode = shareCodeFromPath();
-      if (shareCode) {
+      if (!canUseFastRefresh && shareCode) {
+        user = await api.auth.me();
+        setAuthUser(user);
+        localStorage.setItem(CACHED_USER_KEY, JSON.stringify(user));
         try {
           const membership = await api.members.join(shareCode);
           joinedTripId = membership.trip_id;
@@ -241,8 +300,22 @@ function App() {
           window.history.replaceState({}, "", "/");
         }
       }
-      const { items } = await api.trips.list({ pageSize: 100 });
+      if (!canUseFastRefresh && !shareCode) {
+        const [freshUser, tripResult] = await Promise.all([
+          api.auth.me(),
+          api.trips.list({ pageSize: 100 }),
+        ]);
+        user = freshUser;
+        items = tripResult.items;
+        setAuthUser(user);
+        localStorage.setItem(CACHED_USER_KEY, JSON.stringify(user));
+      } else if (!canUseFastRefresh) {
+        const tripResult = await api.trips.list({ pageSize: 100 });
+        items = tripResult.items;
+      }
       setTrips(items);
+      tripsRef.current = items;
+      localStorage.setItem(CACHED_TRIPS_KEY, JSON.stringify(items));
       const requestedId = joinedTripId ?? preferredTripId ?? (Number(localStorage.getItem("travel-agent-selected-trip")) || 0);
       const selectedTrip = items.find((trip) => trip.id === requestedId) ?? items.find((trip) => trip.status !== "finished") ?? items[0];
       if (!selectedTrip) {
@@ -260,8 +333,10 @@ function App() {
       setRequirements(requirementItems);
       const mappedWorkspace = mapApiWorkspace(detail, members, requirementItems, items.filter((trip) => trip.status === "finished" && trip.id !== selectedTrip.id));
       setWorkspace(mappedWorkspace);
+      workspaceRef.current = mappedWorkspace;
+      persistWorkspace(mappedWorkspace);
       setTripNote(collaborationNote.content);
-      setPersonalPreferences(readSavedText(personalPreferencesKey(user.id)));
+      if (user) setPersonalPreferences(readSavedText(personalPreferencesKey(user.id)));
       setCreateTripOpen(false);
       return mappedWorkspace;
     } catch (error) {
@@ -406,6 +481,7 @@ function App() {
     try {
       const result = authMode === "login" ? await api.auth.login(values.username, values.password) : await api.auth.register(values.username, values.password, values.nickname);
       setAuthUser(result.user);
+      localStorage.setItem(CACHED_USER_KEY, JSON.stringify(result.user));
       setAuthOpen(false);
       setTripDetailOpen(false);
       setLobbyDetailOpen(false);
@@ -436,6 +512,7 @@ function App() {
   const handleLogout = () => {
     api.auth.logout();
     localStorage.removeItem("travel-agent-selected-trip");
+    localStorage.removeItem(CACHED_USER_KEY);
     setWorkspace(null);
     setTrips([]);
     setAuthUser(null);
@@ -1233,6 +1310,7 @@ function App() {
       await api.users.changePassword(currentPassword, newPassword);
       api.auth.logout();
       localStorage.removeItem("travel-agent-selected-trip");
+      localStorage.removeItem(CACHED_USER_KEY);
       setPasswordOpen(false);
       setWorkspace(null);
       setTrips([]);
@@ -1289,7 +1367,7 @@ function App() {
   return (
     <AppShell activeTab={activeTab} onTabChange={handleTabChange}>
       {currentPage}
-      {loading && <div className="sync-indicator">正在同步后端…</div>}
+      {syncIndicatorVisible && <div className="sync-indicator">正在同步后端…</div>}
       {notice && <div className="toast" role="status">{notice}</div>}
       {archivedActionNoticeOpen && <ModalSheet title="温馨提示" onClose={() => setArchivedActionNoticeOpen(false)}>
         <p className="sheet-intro">已经结束的旅行不能修改哦</p>
