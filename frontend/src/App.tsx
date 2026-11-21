@@ -483,9 +483,12 @@ function App() {
   };
 
   const isTripArchived = workspace?.status === "finished";
+  const showArchivedActionNotice = () => {
+    setArchivedActionNoticeOpen(true);
+  };
   const ensureTripWritable = () => {
     if (isTripArchived) {
-      setArchivedActionNoticeOpen(true);
+      showArchivedActionNotice();
       return false;
     }
     return true;
@@ -1132,7 +1135,7 @@ function App() {
     }
     if (!targetWorkspace) return;
     if (targetWorkspace.status === "finished" && label === "攻略导入") {
-      setArchivedActionNoticeOpen(true);
+      showArchivedActionNotice();
       return;
     }
     if (label === "和 Agent 聊聊") {
@@ -1278,7 +1281,7 @@ function App() {
           : <LobbyListPage trips={trips} previews={lobbyPreviews} loading={lobbyListLoading} onOpenChat={(tripId) => void handleOpenTripChat(tripId)} onManage={(tripId) => void handleManageLobby(tripId)} />
         : activeTab === "functions"
           ? workspace
-            ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onArchivedAction={() => setArchivedActionNoticeOpen(true)} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
+            ? <FunctionsPage workspace={workspace} onOpen={(label) => void openFeature(label)} onArchivedAction={showArchivedActionNotice} onCreateExpense={() => setExpenseActivity(null)} onCreateRecord={() => setRecordActivity(null)} />
             : noSelectedTrip
           : <HomePage user={authUser} loading={loading} personalPreferences={personalPreferences} onOpen={(label) => void openFeature(label)} onOpenPreferences={() => { setPersonalPreferences(readSavedText(personalPreferencesKey(authUser.id))); setPersonalPreferencesOpen(true); }} onUploadAvatar={(file) => void handleUploadAvatar(file)} onChangePassword={() => setPasswordOpen(true)} onLogout={handleLogout} />
     : <div className="page empty-workspace-page"><section className="itinerary-empty"><h1>请先登录</h1><p>登录后读取你的真实行程和协作数据。</p><button className="primary-button" onClick={() => setAuthOpen(true)}>登录或注册</button></section></div>;

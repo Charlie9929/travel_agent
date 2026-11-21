@@ -26,7 +26,25 @@ export function FunctionsPage({ workspace, onOpen, onArchivedAction, onCreateExp
         {rows.map(([title, description], index) => {
           const Icon = icons[index];
           const disabled = archived && title === "攻略导入";
-          return <button key={title} className="list-row function-row" onClick={() => disabled ? onArchivedAction() : onOpen(title)} aria-disabled={disabled}><Icon size={22} /><span><strong>{title}</strong><small>{disabled ? "旅行已归档，内容已冻结" : description}</small></span><ChevronRight size={20} /></button>;
+          return <button
+            key={title}
+            type="button"
+            className={`list-row function-row ${disabled ? "is-archived" : ""}`}
+            onClick={(event) => {
+              if (!disabled) {
+                onOpen(title);
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              onArchivedAction();
+            }}
+            aria-disabled={disabled}
+          >
+            <Icon size={22} />
+            <span><strong>{title}</strong><small>{disabled ? "旅行已归档，内容已冻结" : description}</small></span>
+            <ChevronRight size={20} />
+          </button>;
         })}
       </div>
       <section className="closed-feature"><strong>当前数据来自真实行程</strong><span>账单、手帐和版本记录会随行程持续更新</span></section>
