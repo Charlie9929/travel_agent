@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.config import get_settings
 from app.core.errors import AppError
+from app.db.session import AsyncSessionFactory
 from app.integrations.amap import AmapClient
 from app.services.poi_enrichment import poi_unavailable_reason
+from app.services.route_cache import load_cached_routes
 
 
 def validate_trip_rules(
@@ -210,15 +214,18 @@ def validate_trip_rules(
 
 
 async def enrich_route_checks(
-    itinerary: dict[str, Any], *, client: AmapClient, reschedule: bool = False
+    itinerary: dict[str, Any], *, client: AmapClient, reschedule: bool = False,
+    session=None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Query real routes, persist transfers, and optionally assign exact clock times."""
     data = deepcopy(itinerary)
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     city_code = (data.get("city") or {}).get("adcode")
+    route_semaphore = asyncio.Semaphore(max(1, get_settings().amap_route_max_concurrency))
     for day in data.get("days", []):
         activities = day.get("activities", [])
+        day_index = day.get("day_index")
         transfers: list[dict[str, Any]] = []
         original_slots = [deepcopy(activity.get("time_slot")) for activity in activities]
         schedule_failed = False
@@ -238,6 +245,78 @@ async def enrich_route_checks(
                             "message": schedule_error[1],
                         }
                     )
+        if schedule_failed:
+            for activity, original_slot in zip(activities, original_slots, strict=True):
+                activity["time_slot"] = original_slot
+            day["transfers"] = transfers
+            continue
+
+        async def query_segment(index: int, current: dict, following: dict, *, day_index=day_index):
+            explicit_transport = (
+                current.get("type") == "transport" or following.get("type") == "transport"
+            )
+            if explicit_transport:
+                return index, None, None
+            origin = current.get("location") or {}
+            destination = following.get("location") or {}
+            if None in (
+                origin.get("lat"),
+                origin.get("lng"),
+                destination.get("lat"),
+                destination.get("lng"),
+            ):
+                return index, None, {
+                    "code": "ROUTE_COORDINATE_MISSING",
+                    "path": f"days.{day_index}.transfers.{index}",
+                    "message": "活动缺少真实坐标，无法校验交通时间",
+                }
+            try:
+                async with route_semaphore:
+                    if session is None:
+                        result = await client.routes(
+                            from_lng=float(origin["lng"]),
+                            from_lat=float(origin["lat"]),
+                            to_lng=float(destination["lng"]),
+                            to_lat=float(destination["lat"]),
+                            city_code=city_code,
+                            modes={"drive"},
+                        )
+                    else:
+                        async with AsyncSessionFactory() as cache_session:
+                            result = await load_cached_routes(
+                                session=cache_session,
+                                client=client,
+                                from_lng=float(origin["lng"]),
+                                from_lat=float(origin["lat"]),
+                                to_lng=float(destination["lng"]),
+                                to_lat=float(destination["lat"]),
+                                city_code=city_code,
+                                modes={"drive"},
+                            )
+            except AppError as exc:
+                return index, None, {
+                    "code": "ROUTE_PROVIDER_UNAVAILABLE",
+                    "path": f"days.{day_index}.transfers.{index}",
+                    "message": f"真实路线暂时无法查询：{exc.message}",
+                }
+            return index, result, None
+
+        route_results: dict[int, dict | None] = {}
+        route_warnings: dict[int, dict] = {}
+        fetched_segments = await asyncio.gather(
+            *(
+                query_segment(index, current, following)
+                for index, (current, following) in enumerate(
+                    zip(activities, activities[1:], strict=False)
+                )
+            )
+        )
+        for index, result, warning in fetched_segments:
+            route_results[index] = result
+            if warning is not None:
+                route_warnings[index] = warning
+        warnings.extend(route_warnings[index] for index in sorted(route_warnings))
+
         for index, (current, following) in enumerate(zip(activities, activities[1:], strict=False)):
             if schedule_failed:
                 break
@@ -265,27 +344,7 @@ async def enrich_route_checks(
                     }
                 )
             else:
-                try:
-                    result = await client.routes(
-                        from_lng=float(origin["lng"]),
-                        from_lat=float(origin["lat"]),
-                        to_lng=float(destination["lng"]),
-                        to_lat=float(destination["lat"]),
-                        city_code=city_code,
-                        # One reliable route is enough for generation-time
-                        # scheduling. Other modes are loaded on demand by the
-                        # itinerary page.
-                        modes={"drive"},
-                    )
-                except AppError as exc:
-                    warnings.append(
-                        {
-                            "code": "ROUTE_PROVIDER_UNAVAILABLE",
-                            "path": f"days.{day.get('day_index')}.transfers.{index}",
-                            "message": f"真实路线暂时无法查询：{exc.message}",
-                        }
-                    )
-                    result = None
+                result = route_results.get(index)
                 if result is not None:
                     queried_at = result.get("queried_at")
                     if isinstance(queried_at, datetime):

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from copy import deepcopy
@@ -318,6 +319,18 @@ async def generate_initial_itinerary(
                 )
                 planning_draft = result.parsed_data
 
+        # Weather only depends on the dates/city, not on POI matching or route
+        # validation. Start it before the slower AMap/repair loop and merge the
+        # result into the final candidate afterwards.
+        weather_input = deepcopy(data)
+        weather_task = asyncio.create_task(
+            enrich_itinerary_weather(
+                weather_input,
+                city_code=normalize_poi_search_city(trip.city),
+                client=get_qweather_client(),
+            )
+        )
+
         reality_retry_count = 0
         opening_order_repair_count = 0
         while True:
@@ -347,7 +360,7 @@ async def generate_initial_itinerary(
                     )
 
             data, route_errors, route_warnings = await enrich_route_checks(
-                data, client=amap_client, reschedule=True
+                data, client=amap_client, reschedule=True, session=session
             )
             integration_warnings.extend({**warning, "degraded": True} for warning in route_warnings)
             rule_result = validate_trip_rules(data)
@@ -416,11 +429,13 @@ async def generate_initial_itinerary(
                 )
             break
 
-        data, weather_warnings = await enrich_itinerary_weather(
-            data,
-            city_code=normalize_poi_search_city(trip.city),
-            client=get_qweather_client(),
-        )
+        weather_snapshot, weather_warnings = await weather_task
+        weather_by_date = {
+            str(day.get("date")): day.get("weather")
+            for day in weather_snapshot.get("days", [])
+        }
+        for day in data.get("days", []):
+            day["weather"] = weather_by_date.get(str(day.get("date")))
         integration_warnings.extend({**warning, "degraded": True} for warning in weather_warnings)
         data["integration_warnings"] = integration_warnings
         validate_itinerary(data)

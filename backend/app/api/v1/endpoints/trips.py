@@ -299,7 +299,7 @@ async def validate_trip(
     await require_trip_member(session, trip_id, current_user.id)
     itinerary = await build_itinerary_snapshot(session, trip_id)
     itinerary, route_errors, route_warnings = await enrich_route_checks(
-        itinerary, client=get_amap_client()
+        itinerary, client=get_amap_client(), session=session
     )
     result = validate_trip_rules(itinerary, candidate_activities=payload.candidate_activities)
     result["errors"].extend(route_errors)

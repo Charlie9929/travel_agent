@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from datetime import date, datetime
 from typing import Any
@@ -26,22 +27,18 @@ async def enrich_itinerary_weather(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Attach daily weather without making weather availability block the itinerary."""
     enriched = deepcopy(data)
-    warnings: list[dict[str, Any]] = []
-    for day in enriched.get("days", []):
+    async def enrich_day(day: dict[str, Any]) -> dict[str, Any] | None:
         raw_date = day.get("date")
         try:
             target_date = date.fromisoformat(str(raw_date))
         except (TypeError, ValueError):
             day["weather"] = None
-            warnings.append(
-                {
-                    "service": "qweather",
-                    "code": "INVALID_DAY_DATE",
-                    "date": raw_date,
-                    "message": "行程日期无效，未回填天气",
-                }
-            )
-            continue
+            return {
+                "service": "qweather",
+                "code": "INVALID_DAY_DATE",
+                "date": raw_date,
+                "message": "行程日期无效，未回填天气",
+            }
         try:
             weather = await client.weather_for_date(
                 city_code=city_code,
@@ -49,15 +46,12 @@ async def enrich_itinerary_weather(
             )
         except AppError as exc:
             day["weather"] = None
-            warnings.append(
-                {
-                    "service": "qweather",
-                    "code": exc.code,
-                    "date": target_date.isoformat(),
-                    "message": exc.message,
-                }
-            )
-            continue
+            return {
+                "service": "qweather",
+                "code": exc.code,
+                "date": target_date.isoformat(),
+                "message": exc.message,
+            }
         queried_at = weather.get("queried_at")
         if isinstance(queried_at, datetime):
             queried_at = queried_at.isoformat()
@@ -68,4 +62,13 @@ async def enrich_itinerary_weather(
             "source": "qweather_stale" if weather.get("stale") else "qweather",
             "fetched_at": queried_at,
         }
+        return None
+
+    warnings = [
+        warning
+        for warning in await asyncio.gather(
+            *(enrich_day(day) for day in enriched.get("days", []))
+        )
+        if warning is not None
+    ]
     return enriched, warnings
