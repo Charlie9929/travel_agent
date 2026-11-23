@@ -57,9 +57,20 @@ type DayContext = {
   loaded: boolean;
   error: string;
 };
+type DayContextCache = {
+  savedAt: number;
+  weather: ApiWeather | null;
+  poi: ApiPoi | null;
+  activityPois: Record<number, ApiPoi>;
+  routes: Record<string, Record<string, RouteChoice>>;
+  error: string;
+};
 type NavigationTarget = { activity: Activity; mode: RouteMode };
 
 const ROUTE_MODES: RouteMode[] = ["walk", "bike", "drive", "transit"];
+const DAY_CONTEXT_CACHE_PREFIX = "travel-agent:day-context:v1:";
+const DAY_CONTEXT_CACHE_TTL_MS = 30 * 60 * 1000;
+const dayContextMemoryCache = new Map<string, DayContextCache>();
 const ROUTE_LABELS: Record<RouteMode, string> = {
   walk: "步行",
   bike: "骑行",
@@ -131,6 +142,60 @@ function routeIcon(mode: RouteMode, size = 18) {
 
 function segmentKey(segment: Segment) {
   return `${segment.from.id}-${segment.to.id}`;
+}
+
+function dayContextCacheKey(
+  tripId: number,
+  version: number,
+  day: number,
+  segments: Segment[],
+) {
+  const fingerprint = segments
+    .map((segment) => {
+      const from = `${segment.from.id}:${segment.from.latitude ?? ""},${segment.from.longitude ?? ""}`;
+      const to = `${segment.to.id}:${segment.to.latitude ?? ""},${segment.to.longitude ?? ""}`;
+      return `${from}>${to}`;
+    })
+    .join("|");
+  return `${DAY_CONTEXT_CACHE_PREFIX}${tripId}:${version}:${day}:${fingerprint}`;
+}
+
+function readDayContextCache(key: string): DayContextCache | null {
+  const now = Date.now();
+  const memoryValue = dayContextMemoryCache.get(key);
+  if (memoryValue) {
+    if (now - memoryValue.savedAt <= DAY_CONTEXT_CACHE_TTL_MS) return memoryValue;
+    dayContextMemoryCache.delete(key);
+  }
+  try {
+    const stored = window.sessionStorage.getItem(key);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored) as DayContextCache;
+    if (
+      !parsed ||
+      typeof parsed.savedAt !== "number" ||
+      now - parsed.savedAt > DAY_CONTEXT_CACHE_TTL_MS ||
+      !parsed.routes ||
+      typeof parsed.routes !== "object"
+    ) {
+      window.sessionStorage.removeItem(key);
+      return null;
+    }
+    dayContextMemoryCache.set(key, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeDayContextCache(key: string, value: Omit<DayContextCache, "savedAt">) {
+  const cached = { ...value, savedAt: Date.now() } satisfies DayContextCache;
+  dayContextMemoryCache.set(key, cached);
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(cached));
+  } catch {
+    // sessionStorage may be unavailable or full; memory cache remains useful.
+  }
 }
 
 function sameActivityLocation(first: Activity, second: Activity) {
@@ -423,16 +488,33 @@ export function WorldPage({
         loading: true,
       });
     }
+    const cacheKey = dayContextCacheKey(
+      workspace.tripId,
+      workspace.version,
+      selectedDay,
+      pendingSegments,
+    );
+    const cachedDay = readDayContextCache(cacheKey);
     const initialContext: DayContext = {
-      segments: pendingSegments,
-      weather: null,
-      poi: null,
-      activityPois: {},
-      loading: Boolean(activities.length),
-      loaded: !activities.length,
-      error: "",
+      segments: cachedDay
+        ? pendingSegments.map((segment) => ({
+            ...segment,
+            routes: cachedDay.routes[segmentKey(segment)] ?? {},
+            loading: false,
+          }))
+        : pendingSegments,
+      weather: cachedDay?.weather ?? null,
+      poi: cachedDay?.poi ?? null,
+      activityPois: cachedDay?.activityPois ?? {},
+      loading: cachedDay ? false : Boolean(activities.length),
+      loaded: cachedDay ? true : !activities.length,
+      error: cachedDay?.error ?? "",
     };
     setDayContexts((current) => ({ ...current, [selectedDay]: initialContext }));
+    if (cachedDay) {
+      loadedDaysRef.current.add(selectedDay);
+      return;
+    }
     if (!activities.length) {
       loadedDaysRef.current.add(selectedDay);
       return;
@@ -484,6 +566,10 @@ export function WorldPage({
           })))
         : { items: [] };
       const driveResults = new Map(batch.items.map((item) => [item.key, item.routes]));
+      const driveRoutesBySegment: Record<string, Record<string, RouteChoice>> = {};
+      driveResults.forEach((routes, key) => {
+        driveRoutesBySegment[key] = routes as Record<string, RouteChoice>;
+      });
       const nextSegments = pendingSegments.map((pending) => ({
         ...pending,
         routes: (driveResults.get(segmentKey(pending)) ?? {}) as Record<string, RouteChoice>,
@@ -499,8 +585,8 @@ export function WorldPage({
 
       // The drive route is enough for the first paint. The other modes are
       // filled in the background and persisted by the batch endpoint.
-      if (validSegments.length) {
-        void api.map.routesBatch(validSegments.map((segment) => ({
+      const backgroundRoutesPromise = validSegments.length
+        ? api.map.routesBatch(validSegments.map((segment) => ({
           key: segmentKey(segment),
           from_lat: segment.from.latitude as number,
           from_lng: segment.from.longitude as number,
@@ -508,19 +594,8 @@ export function WorldPage({
           to_lng: segment.to.longitude as number,
           city_code: cityCode,
           modes: ROUTE_MODES,
-        }))).then((result) => {
-          const allRoutes = new Map(result.items.map((item) => [item.key, item.routes]));
-          updateDay(day, {
-            segments: nextSegments.map((segment) => ({
-              ...segment,
-              routes: {
-                ...segment.routes,
-                ...((allRoutes.get(segmentKey(segment)) ?? {}) as Record<string, RouteChoice>),
-              },
-            })),
-          });
-        }).catch(() => undefined);
-      }
+        })))
+        : null;
       const poiActivities = activities.filter(
         (activity) =>
           (activity.type === "sight" || activity.type === "food") &&
@@ -528,11 +603,11 @@ export function WorldPage({
           activity.location &&
           activity.location !== "地点待定",
       );
+      const activityPois: Record<number, ApiPoi> = {};
       if (poiActivities.length) {
         const metadataResults = await Promise.allSettled(
           poiActivities.map((activity) => api.map.poi(workspace.city, activity.location)),
         );
-        const activityPois: Record<number, ApiPoi> = {};
         metadataResults.forEach((result, index) => {
           if (result.status !== "fulfilled") return;
           const activity = poiActivities[index];
@@ -543,6 +618,37 @@ export function WorldPage({
           if (matched) activityPois[activity.id] = matched;
         });
         updateDay(day, { activityPois });
+      }
+      writeDayContextCache(cacheKey, {
+        weather,
+        poi,
+        activityPois,
+        routes: driveRoutesBySegment,
+        error: errors.join("；"),
+      });
+      if (backgroundRoutesPromise) {
+        void backgroundRoutesPromise.then((result) => {
+          const mergedRoutes = { ...driveRoutesBySegment };
+          result.items.forEach((item) => {
+            mergedRoutes[item.key] = {
+              ...(mergedRoutes[item.key] ?? {}),
+              ...(item.routes as Record<string, RouteChoice>),
+            };
+          });
+          updateDay(day, {
+            segments: nextSegments.map((segment) => ({
+              ...segment,
+              routes: mergedRoutes[segmentKey(segment)] ?? segment.routes,
+            })),
+          });
+          writeDayContextCache(cacheKey, {
+            weather,
+            poi,
+            activityPois,
+            routes: mergedRoutes,
+            error: errors.join("；"),
+          });
+        }).catch(() => undefined);
       }
       if (routeLoadVersionRef.current === loadVersion) loadedDaysRef.current.add(day);
     };
@@ -623,6 +729,21 @@ export function WorldPage({
       }])
       .then((result) => {
         const routes = result.items[0]?.routes ?? {};
+        const cacheKey = dayContextCacheKey(
+          workspace.tripId,
+          workspace.version,
+          selectedDay,
+          segments,
+        );
+        const cachedDay = readDayContextCache(cacheKey);
+        const cachedRoutes = cachedDay?.routes ?? {};
+        const mergedRoutes = {
+          ...cachedRoutes,
+          [segmentKey(segment)]: {
+            ...(cachedRoutes[segmentKey(segment)] ?? {}),
+            ...(routes as Record<string, RouteChoice>),
+          },
+        };
         setDayContexts((current) => ({
           ...current,
           [selectedDay]: {
@@ -642,6 +763,13 @@ export function WorldPage({
             ),
           },
         }));
+        writeDayContextCache(cacheKey, {
+          weather: cachedDay?.weather ?? selectedContext?.weather ?? null,
+          poi: cachedDay?.poi ?? selectedContext?.poi ?? null,
+          activityPois: cachedDay?.activityPois ?? selectedContext?.activityPois ?? {},
+          routes: mergedRoutes,
+          error: cachedDay?.error ?? selectedContext?.error ?? "",
+        });
       })
       .catch((error) => {
         setDayContexts((current) => ({
@@ -663,7 +791,7 @@ export function WorldPage({
       .finally(() => {
         routeRequestsRef.current.delete(key);
       });
-  }, [selectedContext?.poi?.adcode, selectedDay]);
+  }, [segments, selectedContext, selectedDay, workspace.tripId, workspace.version]);
 
   const openTransportDetails = (segment: Segment) => {
     setActiveSegment(segment);
