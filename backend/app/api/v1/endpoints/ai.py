@@ -1,7 +1,7 @@
 import json
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, BackgroundTasks, Request
 from sqlalchemy import select
 
 from app.api.dependencies import (
@@ -12,7 +12,8 @@ from app.api.dependencies import (
 )
 from app.core.config import get_settings
 from app.core.errors import AppError, NotFoundError
-from app.db.models import AiRunLog, Trip
+from app.db.models import AiRunLog, Trip, User
+from app.db.session import AsyncSessionFactory
 from app.integrations.ocr import get_baidu_ocr_client
 from app.schemas.ai import (
     ApplyAiRunRequest,
@@ -52,6 +53,71 @@ trip_ai_router = APIRouter(prefix="/trips/{trip_id}/ai-runs", tags=["ai"])
 
 GUIDE_IMAGE_TYPES = {"image/jpeg", "image/png"}
 MAX_GUIDE_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+async def _complete_initial_generation(
+    *,
+    trip_id: int,
+    user_id: int,
+    ai_run_id: int,
+    additional_requirements: str | None,
+    reference_guide: str | None,
+) -> None:
+    async with AsyncSessionFactory() as session:
+        run = await session.get(AiRunLog, ai_run_id)
+        if run is None:
+            return
+        try:
+            run, result, new_version = await generate_initial_itinerary(
+                session=session,
+                trip_id=trip_id,
+                user_id=user_id,
+                additional_requirements=additional_requirements,
+                reference_guide=reference_guide,
+                run=run,
+            )
+            trip = await session.get(Trip, trip_id)
+            user = await session.get(User, user_id)
+            trip_brief = (
+                f"请为「{trip.title}」生成初始行程。目的地：{trip.city}；"
+                f"日期：{trip.start_date} 至 {trip.end_date}；"
+                f"人数：{trip.traveler_count or '待定'}；"
+                f"预算：{trip.total_budget or '待定'}。"
+                if trip
+                else "请生成初始行程。"
+            )
+            if additional_requirements:
+                trip_brief += f"补充要求：{additional_requirements}"
+            if reference_guide:
+                trip_brief += "用户还上传了攻略作为本次生成的参考。"
+            queue_system_message(
+                session,
+                trip_id=trip_id,
+                event_type="ai_itinerary_applied",
+                content=f"{user.nickname if user else '用户'} 使用 Agent 生成了初始行程",
+                data={"ai_run_id": run.id, "trip_version": new_version, "run_type": "generate"},
+            )
+            await record_agent_workflow(
+                session,
+                trip_id=trip_id,
+                user_id=user_id,
+                user_content=trip_brief,
+                assistant_content="初始行程已经生成并保存。你可以在行程页查看，也可以在这里继续告诉我想调整的地方。",
+                structured_data={
+                    "workflow": "generate",
+                    "ai_run_id": run.id,
+                    "applied": True,
+                    "trip_version": new_version,
+                },
+            )
+            await session.commit()
+        except Exception:
+            # generate_initial_itinerary already records provider/validation failures.
+            # Keep the task from leaking an exception into the background worker.
+            if run.status == "running":
+                run.status = "failed"
+                run.error_code = "INTERNAL_ERROR"
+                await session.commit()
 
 
 @router.post("/clarify-preferences", response_model=ApiResponse[dict])
@@ -178,6 +244,43 @@ async def generate(
             "integration_warnings": result.parsed_data.get("integration_warnings", []),
         }
     )
+
+
+@router.post("/generate/async", response_model=ApiResponse[dict], status_code=202)
+async def generate_async(
+    payload: GenerateRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
+) -> ApiResponse[dict]:
+    await require_active_trip_editor(session, payload.trip_id, current_user.id)
+    trip = await session.get(Trip, payload.trip_id)
+    if trip is None:
+        raise NotFoundError("行程不存在")
+    run = AiRunLog(
+        trip_id=payload.trip_id,
+        requested_by=current_user.id,
+        run_type="generate",
+        prompt_version="v0.4",
+        input_snapshot={
+            "trip": {"id": trip.id, "version": trip.version},
+            "progress_step": 1,
+            "progress_label": "正在读取需求",
+        },
+        status="running",
+    )
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+    background_tasks.add_task(
+        _complete_initial_generation,
+        trip_id=payload.trip_id,
+        user_id=current_user.id,
+        ai_run_id=run.id,
+        additional_requirements=payload.additional_requirements,
+        reference_guide=payload.reference_guide,
+    )
+    return ApiResponse(data={"ai_run_id": run.id, "status": run.status})
 
 
 @router.post("/replan", response_model=ApiResponse[dict])
@@ -414,6 +517,8 @@ async def get_run(
             "candidate_output": run.candidate_output,
             "error_code": run.error_code,
             "retry_count": run.retry_count,
+            "progress_step": (run.input_snapshot or {}).get("progress_step"),
+            "progress_label": (run.input_snapshot or {}).get("progress_label"),
             "created_at": run.created_at,
             "applied_at": run.applied_at,
         }

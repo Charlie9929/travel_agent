@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, RefreshCw, Send } from "lucide-react";
 import type { AgentMessage, AuthUser, LobbyMessage } from "../types";
 import { ModalSheet } from "./ModalSheet";
+import { ProcessingLabel } from "./ProcessingLabel";
 
 export function ChatSheet({
   mode,
@@ -56,13 +57,13 @@ export function ChatSheet({
           const retryMessageId = Number(message.structuredData.retry_message_id ?? 0);
           const canRetry = localStatus === "failed" && (retryMessageId > 0 || Boolean(message.structuredData.retry_content));
           const label = mine ? "我" : message.kind === "agent" ? "Agent" : message.kind === "system" ? "系统" : message.senderNickname ?? "同行者";
-          const displayContent = localStatus === "pending" ? "Agent 正在回复…" : message.content || (localStatus === "failed" ? "Agent 暂时无法回复" : "");
+          const displayContent = localStatus === "pending" ? <ProcessingLabel label={String(message.structuredData.progress_label ?? "Agent 正在回复")} /> : message.content || (localStatus === "failed" ? "Agent 暂时无法回复" : "");
           return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className={`chat-avatar ${message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}>{message.kind === "agent" ? <Bot size={18} /> : message.kind === "system" ? "系" : message.senderAvatarUrl ? <img src={message.senderAvatarUrl} alt="" /> : label.slice(0, 1)}</span>}<article className={`chat-bubble ${mine ? "is-user" : message.kind === "agent" ? "is-agent" : message.kind === "system" ? "is-system" : ""}`}><strong>{label}</strong><p>{displayContent}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看公开调整候选</button>}{canRetry && <button className="chat-retry-button" onClick={() => onRetry?.(message)}>重新尝试</button>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
         }) : agentMessages.map((message) => {
           const hasCandidate = Boolean(message.structuredData.requires_confirmation && message.structuredData.ai_run_id);
           const applied = Boolean(message.structuredData.applied);
           const mine = message.role === "user";
-          return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className="chat-avatar is-agent"><Bot size={18} /></span>}<article className={`chat-bubble ${mine ? "is-user" : "is-agent"}`}><strong>{mine ? "我" : "Agent"}</strong><p>{message.content || (message.status === "pending" ? "正在思考…" : "暂无内容")}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看并确认调整建议</button>}{applied && !mine && <small className="candidate-applied">已应用到行程</small>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
+          return <div className={`chat-message-row ${mine ? "is-mine" : ""}`} key={message.id}>{!mine && <span className="chat-avatar is-agent"><Bot size={18} /></span>}<article className={`chat-bubble ${mine ? "is-user" : "is-agent"}`}><strong>{mine ? "我" : "Agent"}</strong><p>{message.status === "pending" ? <ProcessingLabel label={String(message.structuredData.progress_label ?? "正在生成回复")} /> : message.content || "暂无内容"}</p>{hasCandidate && <button className="candidate-message-button" onClick={() => onOpenCandidate?.(message.structuredData)}>查看并确认调整建议</button>}{applied && !mine && <small className="candidate-applied">已应用到行程</small>}</article>{mine && <span className="chat-avatar">{currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" /> : currentUser.nickname.slice(0, 1)}</span>}</div>;
         })}
       </div>
       {readOnly ? <div className="empty-chat">旅行已归档，聊天内容仅支持查看。</div> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); if (content.trim()) { onSend(content.trim()); setContent(""); } }}>

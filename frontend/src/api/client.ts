@@ -93,6 +93,22 @@ export type ApiPoi = {
 export type ApiDistrictCity = { name: string; adcode: string };
 export type ApiDistrictProvince = { name: string; adcode: string; cities: ApiDistrictCity[] };
 type ApiDistrictResult = { items: ApiDistrictProvince[]; provider: string; queried_at: string };
+export type ApiRouteMode = "walk" | "bike" | "drive" | "transit";
+export type ApiRouteBatchSegment = {
+  key: string;
+  from_lat: number;
+  from_lng: number;
+  to_lat: number;
+  to_lng: number;
+  city_code?: string;
+  modes: ApiRouteMode[];
+};
+export type ApiRouteBatchResult = {
+  total: number;
+  completed: number;
+  status: string;
+  items: { key: string; routes: Record<string, JsonObject> }[];
+};
 export type ApiLobbyMessage = {
   id: number; trip_id: number; sender_id: number | null; sender_nickname: string | null; sender_avatar_url?: string | null;
   kind: string; content: string; visibility: string; reply_to_id: number | null; structured_data: JsonObject; created_at: string;
@@ -256,6 +272,7 @@ export const api = {
   ai: {
     clarifyPreferences: (tripId: number, userMessage?: string, conversationSummary?: string) => request<{ ready: boolean; questions: string[]; structured_constraints: JsonObject; summary: string }>("/ai/clarify-preferences", { method: "POST", body: JSON.stringify({ trip_id: tripId, user_message: userMessage || null, conversation_summary: conversationSummary || null }) }),
     generate: (tripId: number, additionalRequirements?: string, referenceGuide?: string) => request<JsonObject>("/ai/generate", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements || null, reference_guide: referenceGuide || null }) }),
+    generateAsync: (tripId: number, additionalRequirements?: string, referenceGuide?: string) => request<JsonObject>("/ai/generate/async", { method: "POST", body: JSON.stringify({ trip_id: tripId, additional_requirements: additionalRequirements || null, reference_guide: referenceGuide || null }) }),
     replan: async (body: { trip_id: number; day_number: number; adjustment_requirements: string; trip_version: number; after_time?: string; trigger?: JsonObject; candidate_replacements?: JsonObject[] }) => {
       const result = await request<{ ai_run_id: number; candidate_itinerary: unknown; diff?: { ops: JsonObject[] }; summary: string; base_version: number; retry_count?: number; changed_items?: unknown[]; kept_items?: unknown[] }>("/ai/replan", { method: "POST", body: JSON.stringify(body) });
       return { aiRunId: result.ai_run_id, candidateItinerary: result.candidate_itinerary, summary: result.summary, baseVersion: result.base_version, diff: result.diff, retryCount: result.retry_count, changedItems: result.changed_items, keptItems: result.kept_items } satisfies ReplanResult;
@@ -274,6 +291,7 @@ export const api = {
     districts: () => loadDistricts(),
     poi: (city: string, keyword: string) => request<{ items: ApiPoi[]; provider: string; queried_at: string }>(`/map/poi${queryString({ city, keyword })}`),
     route: (fromLat: number, fromLng: number, toLat: number, toLng: number, cityCode?: string, mode?: "walk" | "bike" | "drive" | "transit") => request<JsonObject>(`/map/route${queryString({ from_lat: fromLat, from_lng: fromLng, to_lat: toLat, to_lng: toLng, city_code: cityCode, mode })}`),
+    routesBatch: (segments: ApiRouteBatchSegment[]) => request<ApiRouteBatchResult>("/map/routes/batch", { method: "POST", body: JSON.stringify({ segments }) }),
   },
   weather: (cityCode: string, date: string) => request<ApiWeather>(`/weather${queryString({ city_code: cityCode, date })}`),
   users: {

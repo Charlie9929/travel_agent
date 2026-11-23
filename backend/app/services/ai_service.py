@@ -170,6 +170,7 @@ def get_amap_client() -> AmapClient:
         api_key=settings.amap_api_key,
         timeout_seconds=settings.amap_timeout_seconds,
         min_interval_seconds=settings.amap_min_interval_seconds,
+        route_min_interval_seconds=settings.amap_route_min_interval_seconds,
         rate_limit_retries=settings.amap_rate_limit_retries,
     )
 
@@ -195,6 +196,7 @@ async def generate_initial_itinerary(
     user_id: int,
     additional_requirements: str | None,
     reference_guide: str | None = None,
+    run: AiRunLog | None = None,
 ) -> tuple[AiRunLog, LLMResult, int]:
     settings = get_settings()
     trip = await session.scalar(select(Trip).where(Trip.id == trip_id))
@@ -209,21 +211,29 @@ async def generate_initial_itinerary(
     constraints = _generation_constraints(trip)
 
     prompt_version = "v0.4"
-    run = AiRunLog(
-        trip_id=trip_id,
-        requested_by=user_id,
-        run_type="generate",
-        prompt_version=prompt_version,
-        input_snapshot={
-            "trip": {"id": trip.id, "version": trip.version},
-            "constraints": constraints,
-            "poi_candidates": poi_candidates,
-            "additional_requirements": additional_requirements,
-            "reference_guide": reference_guide,
-        },
-        status="running",
-    )
-    session.add(run)
+    input_snapshot = {
+        "trip": {"id": trip.id, "version": trip.version},
+        "constraints": constraints,
+        "poi_candidates": poi_candidates,
+        "additional_requirements": additional_requirements,
+        "reference_guide": reference_guide,
+        "progress_step": 1,
+        "progress_label": "正在读取需求",
+    }
+    if run is None:
+        run = AiRunLog(
+            trip_id=trip_id,
+            requested_by=user_id,
+            run_type="generate",
+            prompt_version=prompt_version,
+            input_snapshot=input_snapshot,
+            status="running",
+        )
+        session.add(run)
+    else:
+        run.prompt_version = prompt_version
+        run.input_snapshot = input_snapshot
+        run.status = "running"
     await session.commit()
     await session.refresh(run)
     run_id = int(run.id)
@@ -233,6 +243,12 @@ async def generate_initial_itinerary(
     failed_candidate: dict | None = None
 
     system_prompt = load_shared_prompt("itinerary-generation", prompt_version)
+    run.input_snapshot = {
+        **(run.input_snapshot or {}),
+        "progress_step": 2,
+        "progress_label": "正在构思行程",
+    }
+    await session.commit()
     user_prompt = json.dumps(
         {
             "constraints": constraints,
@@ -415,6 +431,12 @@ async def generate_initial_itinerary(
             require_round_trip=requires_intercity_transport(trip),
         )
 
+        run.input_snapshot = {
+            **(run.input_snapshot or {}),
+            "progress_step": 3,
+            "progress_label": "正在生成计划",
+        }
+        await session.commit()
         new_version = await bump_trip_version(
             session,
             trip_id=trip.id,

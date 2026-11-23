@@ -1,6 +1,6 @@
 import re
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, BackgroundTasks, Query
 from sqlalchemy import func, select
 
 from app.api.dependencies import (
@@ -18,6 +18,7 @@ from app.db.models import (
     Trip,
     User,
 )
+from app.db.session import AsyncSessionFactory
 from app.schemas.collaboration import (
     AgentChatMessageCreate,
     AgentChatMessageRead,
@@ -153,6 +154,61 @@ async def _generate_lobby_agent_message(
     )
 
 
+async def _complete_lobby_agent_message(
+    *, trip_id: int, user_message_id: int, pending_message_id: int, user_id: int
+) -> None:
+    async with AsyncSessionFactory() as session:
+        pending = await session.get(LobbyMessage, pending_message_id)
+        user_message = await session.get(LobbyMessage, user_message_id)
+        if pending is None or user_message is None:
+            return
+        try:
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "local_status": "pending",
+                "progress_step": 1,
+                "progress_label": "正在读取需求",
+            }
+            await session.commit()
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "progress_step": 2,
+                "progress_label": "正在分析行程",
+            }
+            await session.commit()
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "progress_step": 3,
+                "progress_label": "正在生成回复",
+            }
+            await session.commit()
+            generated = await _generate_lobby_agent_message(
+                session,
+                trip_id=trip_id,
+                user_message=user_message,
+                user_id=user_id,
+            )
+            pending.content = generated.content
+            pending.structured_data = generated.structured_data
+        except AppError as exc:
+            pending.content = exc.message
+            pending.structured_data = {
+                "local_status": "failed",
+                "retry_content": user_message.content,
+                "retry_message_id": user_message.id,
+                "error_code": exc.code,
+            }
+        except Exception:
+            pending.content = "Agent 暂时无法回复，请稍后重试"
+            pending.structured_data = {
+                "local_status": "failed",
+                "retry_content": user_message.content,
+                "retry_message_id": user_message.id,
+                "error_code": "INTERNAL_ERROR",
+            }
+        await session.commit()
+
+
 @router.get("/trips/{trip_id}/messages", response_model=ApiResponse[LobbyMessagePage])
 async def list_lobby_messages(
     trip_id: int,
@@ -205,6 +261,7 @@ async def send_lobby_message(
     payload: LobbyMessageCreate,
     session: DbSession,
     current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
 ) -> ApiResponse[list[LobbyMessageRead]]:
     await require_active_trip_member(session, trip_id, current_user.id)
     if payload.reply_to_id is not None:
@@ -228,22 +285,33 @@ async def send_lobby_message(
     created = [user_message]
     ask_agent = payload.ask_agent or _agent_mentioned(payload.content)
     if ask_agent:
-        try:
-            agent_message = await _generate_lobby_agent_message(
-                session,
-                trip_id=trip_id,
-                user_message=user_message,
-                user_id=current_user.id,
-            )
-        except AppError as exc:
-            await session.commit()
-            exc.detail = {"user_message_id": user_message.id, "agent_error": exc.detail}
-            raise
+        agent_message = LobbyMessage(
+            trip_id=trip_id,
+            sender_id=None,
+            kind="agent",
+            content="",
+            reply_to_id=user_message.id,
+            structured_data={
+                "local_status": "pending",
+                "progress_step": 1,
+                "progress_label": "正在读取需求",
+                "retry_content": payload.content,
+                "retry_message_id": user_message.id,
+            },
+        )
         session.add(agent_message)
         created.append(agent_message)
     await session.commit()
     for item in created:
         await session.refresh(item)
+    if ask_agent:
+        background_tasks.add_task(
+            _complete_lobby_agent_message,
+            trip_id=trip_id,
+            user_message_id=user_message.id,
+            pending_message_id=agent_message.id,
+            user_id=current_user.id,
+        )
     return ApiResponse(data=[await _lobby_message_read(session, item) for item in created])
 
 
@@ -257,6 +325,7 @@ async def retry_lobby_agent_message(
     message_id: int,
     session: DbSession,
     current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
 ) -> ApiResponse[list[LobbyMessageRead]]:
     await require_active_trip_member(session, trip_id, current_user.id)
     user_message = await session.scalar(
@@ -278,21 +347,42 @@ async def retry_lobby_agent_message(
         .order_by(LobbyMessage.id.desc())
     )
     if existing is not None:
-        return ApiResponse(data=[await _lobby_message_read(session, existing)])
-    try:
-        agent_message = await _generate_lobby_agent_message(
-            session,
+        if existing.structured_data.get("local_status") == "pending":
+            return ApiResponse(data=[await _lobby_message_read(session, existing)])
+        existing.content = ""
+        existing.structured_data = {
+            "local_status": "pending",
+            "progress_step": 1,
+            "progress_label": "正在读取需求",
+            "retry_content": user_message.content,
+            "retry_message_id": user_message.id,
+        }
+        agent_message = existing
+    else:
+        agent_message = LobbyMessage(
             trip_id=trip_id,
-            user_message=user_message,
-            user_id=current_user.id,
+            sender_id=None,
+            kind="agent",
+            content="",
+            reply_to_id=user_message.id,
+            structured_data={
+                "local_status": "pending",
+                "progress_step": 1,
+                "progress_label": "正在读取需求",
+                "retry_content": user_message.content,
+                "retry_message_id": user_message.id,
+            },
         )
-    except AppError as exc:
-        await session.rollback()
-        exc.detail = {"user_message_id": message_id, "agent_error": exc.detail}
-        raise
-    session.add(agent_message)
+        session.add(agent_message)
     await session.commit()
     await session.refresh(agent_message)
+    background_tasks.add_task(
+        _complete_lobby_agent_message,
+        trip_id=trip_id,
+        user_message_id=user_message.id,
+        pending_message_id=agent_message.id,
+        user_id=current_user.id,
+    )
     return ApiResponse(data=[await _lobby_message_read(session, agent_message)])
 
 
@@ -382,6 +472,105 @@ async def _owned_conversation(
     return conversation
 
 
+async def _complete_agent_chat_message(
+    *, conversation_id: int, pending_message_id: int, user_message_id: int, user_id: int
+) -> None:
+    async with AsyncSessionFactory() as session:
+        conversation = await session.scalar(
+            select(AgentConversation).where(
+                AgentConversation.id == conversation_id,
+                AgentConversation.user_id == user_id,
+            )
+        )
+        pending = await session.get(AgentChatMessage, pending_message_id)
+        user_message = await session.get(AgentChatMessage, user_message_id)
+        if conversation is None or pending is None or user_message is None:
+            return
+        try:
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "progress_step": 1,
+                "progress_label": "正在读取需求",
+            }
+            await session.commit()
+            history = list(
+                (
+                    await session.scalars(
+                        select(AgentChatMessage)
+                        .where(AgentChatMessage.conversation_id == conversation.id)
+                        .order_by(AgentChatMessage.id.desc())
+                        .limit(30)
+                    )
+                ).all()
+            )
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "progress_step": 2,
+                "progress_label": "正在分析行程",
+            }
+            await session.commit()
+            pending.structured_data = {
+                **(pending.structured_data or {}),
+                "progress_step": 3,
+                "progress_label": "正在生成回复",
+            }
+            await session.commit()
+            if _agent_adjustment_requested(user_message.content):
+                trip = await session.get(Trip, conversation.trip_id)
+                if trip is None:
+                    raise NotFoundError("行程不存在")
+                context = "\n".join(
+                    f"{item.role}: {item.content}"
+                    for item in reversed(history)
+                    if item.id != pending.id
+                )
+                run, result = await generate_revision_candidate(
+                    session=session,
+                    trip_id=conversation.trip_id,
+                    user_id=user_id,
+                    changed_constraints={},
+                    user_instruction=f"结合本次私聊上下文调整行程。\n{context}\n最新要求：{user_message.content}",
+                    trip_version=trip.version,
+                )
+                candidate = result.parsed_data
+                pending.content = candidate["summary"]
+                pending.structured_data = {
+                    "workflow": "revise",
+                    "ai_run_id": run.id,
+                    "candidate_itinerary": candidate["proposed_itinerary"],
+                    "diff": candidate["diff"],
+                    "summary": candidate["summary"],
+                    "base_version": trip.version,
+                    "retry_count": run.retry_count,
+                    "requires_confirmation": True,
+                    **candidate_presentation(candidate),
+                }
+            else:
+                pending.content = await generate_chat_reply(
+                    session,
+                    trip_id=conversation.trip_id,
+                    user_id=user_id,
+                    question=user_message.content,
+                    mode="private",
+                    recent_messages=[
+                        {"role": item.role, "content": item.content}
+                        for item in reversed(history)
+                        if item.id != pending.id
+                    ],
+                )
+            pending.status = "succeeded"
+            pending.error_code = None
+        except AppError as exc:
+            pending.status = "failed"
+            pending.error_code = exc.code
+            pending.content = exc.message
+        except Exception:
+            pending.status = "failed"
+            pending.error_code = "INTERNAL_ERROR"
+            pending.content = "Agent 暂时无法回复，请稍后重试"
+        await session.commit()
+
+
 @router.get(
     "/agent/conversations/{conversation_id}/messages",
     response_model=ApiResponse[list[AgentChatMessageRead]],
@@ -416,6 +605,7 @@ async def send_agent_chat_message(
     payload: AgentChatMessageCreate,
     session: DbSession,
     current_user: CurrentUser,
+    background_tasks: BackgroundTasks,
 ) -> ApiResponse[AgentChatSendResult]:
     conversation = await _owned_conversation(session, conversation_id, current_user.id)
     await require_active_trip_member(session, conversation.trip_id, current_user.id)
@@ -430,77 +620,25 @@ async def send_agent_chat_message(
         role="assistant",
         content="",
         status="pending",
+        structured_data={
+            "progress_step": 1,
+            "progress_label": "正在读取需求",
+        },
     )
     session.add_all([user_message, pending])
     conversation.updated_at = func.now()
     await session.commit()
     await session.refresh(user_message)
     await session.refresh(pending)
-    history = list(
-        (
-            await session.scalars(
-                select(AgentChatMessage)
-                .where(AgentChatMessage.conversation_id == conversation.id)
-                .order_by(AgentChatMessage.id.desc())
-                .limit(30)
-            )
-        ).all()
-    )
-    try:
-        adjustment_requested = _agent_adjustment_requested(payload.content)
-        if adjustment_requested:
-            trip = await session.get(Trip, conversation.trip_id)
-            if trip is None:
-                raise NotFoundError("行程不存在")
-            context = "\n".join(
-                f"{item.role}: {item.content}"
-                for item in reversed(history)
-                if item.id != pending.id
-            )
-            run, result = await generate_revision_candidate(
-                session=session,
-                trip_id=conversation.trip_id,
-                user_id=current_user.id,
-                changed_constraints={},
-                user_instruction=(
-                    f"结合本次私聊上下文调整行程。\n{context}\n最新要求：{payload.content}"
-                ),
-                trip_version=trip.version,
-            )
-            candidate = result.parsed_data
-            pending.content = candidate["summary"]
-            pending.structured_data = {
-                "workflow": "revise",
-                "ai_run_id": run.id,
-                "candidate_itinerary": candidate["proposed_itinerary"],
-                "diff": candidate["diff"],
-                "summary": candidate["summary"],
-                "base_version": trip.version,
-                "retry_count": run.retry_count,
-                "requires_confirmation": True,
-                **candidate_presentation(candidate),
-            }
-        else:
-            pending.content = await generate_chat_reply(
-                session,
-                trip_id=conversation.trip_id,
-                user_id=current_user.id,
-                question=payload.content,
-                mode="private",
-                recent_messages=[
-                    {"role": item.role, "content": item.content}
-                    for item in reversed(history)
-                    if item.id != pending.id
-                ],
-            )
-        pending.status = "succeeded"
-        pending.error_code = None
-    except AppError as exc:
-        pending.status = "failed"
-        pending.error_code = exc.code
-        pending.content = exc.message
     await session.commit()
     await session.refresh(pending)
+    background_tasks.add_task(
+        _complete_agent_chat_message,
+        conversation_id=conversation.id,
+        pending_message_id=pending.id,
+        user_message_id=user_message.id,
+        user_id=current_user.id,
+    )
     return ApiResponse(
         data=AgentChatSendResult(
             user_message=AgentChatMessageRead.model_validate(user_message),

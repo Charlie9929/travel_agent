@@ -202,6 +202,40 @@ class TripRevision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RouteCache(TimestampMixin, Base):
+    __tablename__ = "route_cache"
+    __table_args__ = (
+        UniqueConstraint(
+            "origin_lat_key",
+            "origin_lng_key",
+            "destination_lat_key",
+            "destination_lng_key",
+            "mode",
+            "city_code",
+            "strategy",
+            name="uq_route_cache_lookup",
+        ),
+        Index("ix_route_cache_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    origin_lat_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin_lng_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    destination_lat_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    destination_lng_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    city_code: Mapped[str | None] = mapped_column(String(20))
+    strategy: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="default", server_default="default"
+    )
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="amap", server_default="amap"
+    )
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class EditConflict(Base):
     __tablename__ = "edit_conflict"
 

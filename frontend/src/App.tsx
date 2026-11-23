@@ -239,6 +239,7 @@ function App() {
   const [syncIndicatorVisible, setSyncIndicatorVisible] = useState(false);
   const [conflict, setConflict] = useState<ConflictResolution | null>(null);
   const lobbyMessagesRef = useRef<LobbyMessage[]>([]);
+  const agentMessagesRef = useRef<AgentMessage[]>([]);
   const localMessageIdRef = useRef(-1);
   const authUserRef = useRef<AuthUser | null>(authUser);
   const tripsRef = useRef<ApiTrip[]>(trips);
@@ -260,6 +261,9 @@ function App() {
   useEffect(() => {
     lobbyMessagesRef.current = lobbyMessages;
   }, [lobbyMessages]);
+  useEffect(() => {
+    agentMessagesRef.current = agentMessages;
+  }, [agentMessages]);
 
   const handleUnauthorized = useCallback(() => {
     api.auth.logout();
@@ -444,7 +448,12 @@ function App() {
     const pollLobby = async () => {
       if (inFlight) return;
       inFlight = true;
-      const lastServerId = lobbyMessagesRef.current.filter((item) => item.id > 0).at(-1)?.id;
+      const hasPendingAgent = lobbyMessagesRef.current.some(
+        (item) => item.kind === "agent" && item.structuredData.local_status === "pending",
+      );
+      const lastServerId = hasPendingAgent
+        ? undefined
+        : lobbyMessagesRef.current.filter((item) => item.id > 0).at(-1)?.id;
       try {
         const result = await api.collaboration.lobby.list(tripId, lastServerId);
         if (cancelled) return;
@@ -474,6 +483,36 @@ function App() {
     const timer = window.setInterval(() => void pollLobby(), 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [authUser, chatMode, handleUnauthorized, workspace]);
+
+  useEffect(() => {
+    if (chatMode !== "agent" || !agentConversationId || !authUser) return;
+    let cancelled = false;
+    let inFlight = false;
+    const pollAgent = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      const hasPending = agentMessagesRef.current.some((item) => item.status === "pending");
+      const lastId = agentMessagesRef.current.filter((item) => item.id > 0).at(-1)?.id;
+      try {
+        const result = await api.collaboration.agent.messages(
+          agentConversationId,
+          hasPending ? undefined : lastId,
+        );
+        if (cancelled || !result.length) return;
+        setAgentMessages((current) => {
+          const next = hasPending ? result : [...current, ...result.filter((item) => !current.some((old) => old.id === item.id))];
+          agentMessagesRef.current = next;
+          return next;
+        });
+      } catch (error) {
+        if (!cancelled && error instanceof ApiError && error.status === 401) handleUnauthorized();
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => void pollAgent(), 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [agentConversationId, authUser, chatMode, handleUnauthorized]);
 
   const handleAuth = async (values: { username: string; password: string; nickname: string }) => {
     setAuthLoading(true);
@@ -947,8 +986,17 @@ function App() {
     if (!workspace || !ensureTripWritable()) return;
     setReplanLoading(true);
     try {
-      setGenerationStep(2);
-      await api.ai.generate(workspace.tripId, requirementsText || undefined, referenceGuide || undefined);
+      const queued = await api.ai.generateAsync(workspace.tripId, requirementsText || undefined, referenceGuide || undefined);
+      const runId = Number(queued.ai_run_id);
+      let status = "running";
+      while (status === "running") {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const run = await api.ai.run(runId);
+        status = String(run.status ?? "running");
+        const progressStep = Number(run.progress_step);
+        if (progressStep >= 1 && progressStep <= generationSteps.length) setGenerationStep(progressStep - 1);
+      }
+      if (status !== "applied" && status !== "succeeded") throw new Error("Agent 生成失败，请稍后重试");
       setGenerationStep(generationSteps.length);
       setGenerateOpen(false);
       await refreshWorkspace(workspace.tripId);

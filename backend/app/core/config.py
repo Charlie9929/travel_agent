@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     amap_api_key: str = ""
     amap_timeout_seconds: float = 10.0
     amap_min_interval_seconds: float = 1.1
+    amap_route_min_interval_seconds: float = 0.42
+    amap_route_max_concurrency: int = 8
+    route_cache_ttl_seconds: float = 86400.0
     amap_rate_limit_retries: int = 3
 
     qweather_api_host: str = ""

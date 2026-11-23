@@ -462,54 +462,65 @@ export function WorldPage({
       if (weatherResult.status === "rejected") errors.push("天气查询失败");
       if (poiResult.status === "rejected") errors.push("地点信息查询失败");
       updateDay(day, { weather, poi });
-
-      const nextSegments: Segment[] = [];
-      for (const pending of pendingSegments) {
-        const { from, to } = pending;
-        if (
-          from.latitude == null ||
-          from.longitude == null ||
-          to.latitude == null ||
-          to.longitude == null
-        ) {
-          nextSegments.push({ ...pending, loading: false, error: "地点缺少坐标" });
-          errors.push(`${from.title}到${to.title}缺少坐标`);
-        } else {
-          try {
-            const result = await api.map.route(
-              from.latitude,
-              from.longitude,
-              to.latitude,
-              to.longitude,
-              cityCode,
-              "drive",
-            );
-            nextSegments.push({
-              ...pending,
-              routes: (result.routes ?? {}) as Record<string, RouteChoice>,
-              loading: false,
-            });
-          } catch (error) {
-            nextSegments.push({
-              from,
-              to,
-              routes: {},
-              loading: false,
-              error: (error as Error).message,
-            });
-            errors.push(`${from.title}到${to.title}路线查询失败`);
-          }
-        }
-        updateDay(day, {
-          segments: [...nextSegments, ...pendingSegments.slice(nextSegments.length)],
-        });
-      }
+      const validSegments = pendingSegments.filter(
+        (segment) =>
+          segment.from.latitude != null &&
+          segment.from.longitude != null &&
+          segment.to.latitude != null &&
+          segment.to.longitude != null,
+      );
+      pendingSegments.forEach((segment) => {
+        if (!validSegments.includes(segment)) errors.push(`${segment.from.title}到${segment.to.title}缺少坐标`);
+      });
+      const batch = validSegments.length
+        ? await api.map.routesBatch(validSegments.map((segment) => ({
+            key: segmentKey(segment),
+            from_lat: segment.from.latitude as number,
+            from_lng: segment.from.longitude as number,
+            to_lat: segment.to.latitude as number,
+            to_lng: segment.to.longitude as number,
+            city_code: cityCode,
+            modes: ["drive"],
+          })))
+        : { items: [] };
+      const driveResults = new Map(batch.items.map((item) => [item.key, item.routes]));
+      const nextSegments = pendingSegments.map((pending) => ({
+        ...pending,
+        routes: (driveResults.get(segmentKey(pending)) ?? {}) as Record<string, RouteChoice>,
+        loading: false,
+        error: driveResults.has(segmentKey(pending)) ? undefined : pending.error,
+      }));
       updateDay(day, {
         segments: nextSegments,
         loading: false,
         loaded: true,
         error: errors.join("；"),
       });
+
+      // The drive route is enough for the first paint. The other modes are
+      // filled in the background and persisted by the batch endpoint.
+      if (validSegments.length) {
+        void api.map.routesBatch(validSegments.map((segment) => ({
+          key: segmentKey(segment),
+          from_lat: segment.from.latitude as number,
+          from_lng: segment.from.longitude as number,
+          to_lat: segment.to.latitude as number,
+          to_lng: segment.to.longitude as number,
+          city_code: cityCode,
+          modes: ROUTE_MODES,
+        }))).then((result) => {
+          const allRoutes = new Map(result.items.map((item) => [item.key, item.routes]));
+          updateDay(day, {
+            segments: nextSegments.map((segment) => ({
+              ...segment,
+              routes: {
+                ...segment.routes,
+                ...((allRoutes.get(segmentKey(segment)) ?? {}) as Record<string, RouteChoice>),
+              },
+            })),
+          });
+        }).catch(() => undefined);
+      }
       const poiActivities = activities.filter(
         (activity) =>
           (activity.type === "sight" || activity.type === "food") &&
@@ -533,9 +544,7 @@ export function WorldPage({
         });
         updateDay(day, { activityPois });
       }
-      if (routeLoadVersionRef.current === loadVersion) {
-        loadedDaysRef.current.add(day);
-      }
+      if (routeLoadVersionRef.current === loadVersion) loadedDaysRef.current.add(day);
     };
 
     const selectedDate = days.find(([day]) => day === selectedDay)?.[1] ?? "";
@@ -603,14 +612,17 @@ export function WorldPage({
     }));
 
     void api.map
-      .route(
-        segment.from.latitude,
-        segment.from.longitude,
-        segment.to.latitude,
-        segment.to.longitude,
-        selectedContext?.poi?.adcode ?? undefined,
-      )
+      .routesBatch([{
+        key: segmentKey(segment),
+        from_lat: segment.from.latitude,
+        from_lng: segment.from.longitude,
+        to_lat: segment.to.latitude,
+        to_lng: segment.to.longitude,
+        city_code: selectedContext?.poi?.adcode ?? undefined,
+        modes: ROUTE_MODES,
+      }])
       .then((result) => {
+        const routes = result.items[0]?.routes ?? {};
         setDayContexts((current) => ({
           ...current,
           [selectedDay]: {
@@ -619,7 +631,10 @@ export function WorldPage({
               segmentKey(item) === segmentKey(segment)
                 ? {
                     ...item,
-                    routes: (result.routes ?? {}) as Record<string, RouteChoice>,
+                    routes: {
+                      ...item.routes,
+                      ...(routes as Record<string, RouteChoice>),
+                    },
                     routesLoading: false,
                     routeDetailError: "",
                   }

@@ -19,15 +19,17 @@ class AmapClient:
         api_key: str,
         timeout_seconds: float = 10.0,
         min_interval_seconds: float = 1.1,
+        route_min_interval_seconds: float = 0.42,
         rate_limit_retries: int = 3,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.min_interval_seconds = min_interval_seconds
+        self.route_min_interval_seconds = route_min_interval_seconds
         self.rate_limit_retries = rate_limit_retries
-        self._last_request_at = 0.0
-        self._rate_lock = asyncio.Lock()
+        self._last_request_at: dict[str, float] = {}
+        self._rate_locks: dict[str, asyncio.Lock] = {}
         self._poi_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._district_cache: dict[str, Any] | None = None
 
@@ -208,13 +210,20 @@ class AmapClient:
             )
         raise RuntimeError("unreachable")
 
-    async def _wait_for_rate_slot(self) -> None:
-        async with self._rate_lock:
-            elapsed = time.monotonic() - self._last_request_at
-            wait_seconds = self.min_interval_seconds - elapsed
+    async def _wait_for_rate_slot(self, bucket: str = "default") -> None:
+        lock = self._rate_locks.setdefault(bucket, asyncio.Lock())
+        interval = (
+            self.route_min_interval_seconds
+            if bucket in {"walk", "bike", "drive", "transit"}
+            else self.min_interval_seconds
+        )
+        async with lock:
+            last_request_at = self._last_request_at.get(bucket, 0.0)
+            elapsed = time.monotonic() - last_request_at
+            wait_seconds = interval - elapsed
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
-            self._last_request_at = time.monotonic()
+            self._last_request_at[bucket] = time.monotonic()
 
     async def routes(
         self,
@@ -240,44 +249,39 @@ class AmapClient:
         requested_modes = set(specs) if modes is None else set(modes) & set(specs)
         results: dict[str, Any] = {}
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            for mode, (path, extra) in specs.items():
-                if mode not in requested_modes:
-                    continue
-                await self._wait_for_rate_slot()
-                params = {
-                    "key": self.api_key,
-                    "origin": origin,
-                    "destination": destination,
-                    **extra,
-                }
+            async def fetch_mode(mode: str) -> tuple[str, dict[str, Any]]:
+                if mode == "transit":
+                    if not city_code:
+                        return mode, {"available": False, "reason": "city_code_required"}
+                    path = "/v5/direction/transit/integrated"
+                    params = {
+                        "key": self.api_key,
+                        "origin": origin,
+                        "destination": destination,
+                        "city1": canonical_city_adcode(city_code),
+                        "city2": canonical_city_adcode(city_code),
+                        "show_fields": "cost,polyline",
+                    }
+                    transit = True
+                else:
+                    path, extra = specs[mode]
+                    params = {
+                        "key": self.api_key,
+                        "origin": origin,
+                        "destination": destination,
+                        **extra,
+                    }
+                    transit = False
                 try:
+                    await self._wait_for_rate_slot(mode)
                     response = await client.get(f"{self.base_url}{path}", params=params)
                     response.raise_for_status()
-                    results[mode] = self._normalize_route(response.json())
+                    return mode, self._normalize_route(response.json(), transit=transit)
                 except httpx.HTTPError:
-                    results[mode] = {"available": False}
+                    return mode, {"available": False}
 
-            if city_code and (modes is None or "transit" in modes):
-                city_code = canonical_city_adcode(city_code)
-                try:
-                    await self._wait_for_rate_slot()
-                    response = await client.get(
-                        f"{self.base_url}/v5/direction/transit/integrated",
-                        params={
-                            "key": self.api_key,
-                            "origin": origin,
-                            "destination": destination,
-                            "city1": city_code,
-                            "city2": city_code,
-                            "show_fields": "cost,polyline",
-                        },
-                    )
-                    response.raise_for_status()
-                    results["transit"] = self._normalize_route(response.json(), transit=True)
-                except httpx.HTTPError:
-                    results["transit"] = {"available": False}
-            elif modes is None or "transit" in modes:
-                results["transit"] = {"available": False, "reason": "city_code_required"}
+            fetched = await asyncio.gather(*(fetch_mode(mode) for mode in requested_modes))
+            results.update(fetched)
         return {"routes": results, "provider": "amap", "queried_at": datetime.now(UTC)}
 
     @staticmethod
